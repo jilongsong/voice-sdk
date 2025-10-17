@@ -1,7 +1,7 @@
 {
   "name": "web-voice-kit",
   "version": "0.1.1",
-  "description": "A lightweight browser voice SDK with wake word and transcription, built with Vite.",
+  "description": "A lightweight browser voice SDK: Vosk wake word + iFlytek (Xunfei) real-time transcription.",
   "type": "module",
   "main": "dist/voice-sdk.cjs.js",
   "module": "dist/voice-sdk.es.js",
@@ -28,7 +28,10 @@
     "voice",
     "sdk",
     "speech-to-text",
+    "vosk",
     "wake word",
+    "xunfei",
+    "iflytek",
     "transcription",
     "vite"
   ],
@@ -44,7 +47,6 @@
   },
   "devDependencies": {
     "@types/crypto-js": "^4.2.2",
-    "@types/dom-speech-recognition": "^0.0.7",
     "@types/node": "^20.11.30",
     "rimraf": "^5.0.5",
     "typescript": "^5.4.0",

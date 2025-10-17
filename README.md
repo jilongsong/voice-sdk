@@ -1,12 +1,12 @@
 # Voice SDK
 
-A lightweight browser voice SDK with wake word and transcription, built with Vite and TypeScript. Suitable for publishing on GitHub and consumption by other projects.
+Lightweight browser voice SDK with a fixed pipeline: Vosk wake word detection + iFlytek (Xunfei) real-time speech transcription. Built with Vite and TypeScript.
 
 Features:
-- Wake word detection (default: simple phrase match in transcript)
-- Speech-to-text transcription (default: Web Speech API)
-- Pluggable adapters for transcribers and wake word detectors
-- ESM/CJS/UMD builds + TypeScript types
+- Continuous wake listening using Vosk (browser-side, requires model asset)
+- Real-time transcription using iFlytek (Xunfei) WebSocket API
+- Automatic end-of-utterance by inactivity (configurable `endTimeoutMs`, default 1200ms)
+- ESM/CJS builds + TypeScript types
 
 ## Install
 
@@ -27,60 +27,52 @@ npm run build
 
 ## Usage
 
-Basic usage with built-in Web Speech API transcriber:
+Minimal example:
 ```ts
 import { VoiceSDK } from 'web-voice-kit';
 
 const sdk = new VoiceSDK({
-  wakeWord: 'hey voice',
-  locale: 'zh-CN',
-  interimResults: true,
-  autoStart: true,
-}, {
-  onWake: () => console.log('Wake word detected'),
-  onTranscript: (text, isFinal) => console.log('Transcript:', text, isFinal),
-  onError: (e) => console.error('VoiceSDK error:', e),
-});
-```
+  // Required: wake word phrase and Vosk model path
+  wakeWord: '嘿，小智',
+  voskModelPath: '/models/vosk-model-small-zh-cn-0.22.zip', // or a directory URL
 
-### Use iFlytek (讯飞) real-time transcription with minimal config
-```ts
-import { VoiceSDK } from 'web-voice-kit';
-
-const sdk = new VoiceSDK({
-  // Only appId and apiKey are required to enable Xunfei adapter automatically
+  // Required: iFlytek credentials
   xunfei: {
     appId: 'YOUR_APP_ID',
     apiKey: 'YOUR_API_KEY',
-    // optional overrides:
+    // optional:
     // sampleRate: 16000,
     // frameSize: 1280,
     // vadThreshold: 0.005,
   },
+
+  // Optional
   interimResults: true,
   locale: 'zh-CN',
+  // End-of-utterance when no transcript activity for N ms after wake
+  endTimeoutMs: 1200,
+  // Wake-gated transcription (default true): start ASR only after wake
+  requireWakeBeforeTranscribe: true,
 }, {
+  onWake: () => console.log('Woke!'),
   onTranscript: (text, isFinal) => console.log('ASR:', text, isFinal),
   onError: (e) => console.error('VoiceSDK error:', e),
 });
 
 await sdk.start();
-// ...
+// ... later
 await sdk.stop();
 ```
 
-Advanced: direct access to the adapter
-```ts
-import { IatTranscriber, VoiceSDK } from 'web-voice-kit';
-const transcriber = new IatTranscriber({ appId: '...', apiKey: '...' });
-const sdk = new VoiceSDK({ transcriber });
-```
+### Notes
+- If you don't pass `voskModelPath`, the SDK uses a bundled small Chinese Vosk model by default.
+- If you prefer your own model, set `voskModelPath` to a directory URL or an archive (zip/tar.gz). The model must be accessible from the browser (local dev server or CDN). Ensure proper CORS/HTTPS settings.
+- `endTimeoutMs` controls how quickly an utterance ends after wake if the user stops speaking. Tune based on UX.
+- The SDK uses a single mic source for wake and ASR; permissions are requested by the browser.
 
 ## Browser Support
 
-The default transcriber uses the Web Speech API (SpeechRecognition), which is supported in Chromium-based browsers and some versions of Edge/Chrome. Safari supports a prefixed version. Firefox does not currently support it.
-
-You can provide your own transcriber adapter if you need broader support (e.g., server-side Whisper or WebAssembly-based STT).
+Tested primarily on Chromium-based browsers (Chrome/Edge). Ensure `navigator.mediaDevices.getUserMedia` and WebAudio are available. Vosk runs in-browser via `vosk-browser`.
 
 ## Development
 

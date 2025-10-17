@@ -6,6 +6,8 @@
 */
 
 import type { WakeWordDetector } from './WakeWordDetector';
+// Default bundled model URL (served by bundler)
+import defaultModelUrl from '../vosk-model-small-cn-0.22.zip?url';
 
 // Import as any to avoid type frictions if no types installed
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -60,12 +62,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       this.Vosk = await import('vosk-browser');
     }
     if (!this.model) {
-      const modelPath = this.options.modelPath;
-      if (!modelPath) {
-        throw new Error(
-          'VoskWakeWordDetector: modelPath is required. Provide a URL or path to a Vosk model (zip/tar.gz or directory).'
-        );
-      }
+      const modelPath = this.options.modelPath || defaultModelUrl;
       this.model = await this.Vosk.createModel(modelPath);
     }
     if (!this.recognizer) {
