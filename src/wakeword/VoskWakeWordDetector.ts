@@ -60,12 +60,11 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       this.Vosk = await import('vosk-browser');
     }
     if (!this.model) {
-      let modelPath = this.options.modelPath;
+      const modelPath = this.options.modelPath;
       if (!modelPath) {
-        // Fallback to built-in model bundled as asset
-        // Note: ensure the model file exists at src/vosk-model-small-cn-0.22.zip
-        const mod: any = await import('../vosk-model-small-cn-0.22.zip?url');
-        modelPath = mod.default as string;
+        throw new Error(
+          'VoskWakeWordDetector: modelPath is required. Provide a URL or path to a Vosk model (zip/tar.gz or directory).'
+        );
       }
       this.model = await this.Vosk.createModel(modelPath);
     }

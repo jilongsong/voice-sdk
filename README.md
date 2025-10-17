@@ -12,11 +12,11 @@ Features:
 
 Once published to npm:
 ```bash
-npm i @your-scope/voice-sdk
+npm i web-voice-kit
 # or
-pnpm add @your-scope/voice-sdk
+pnpm add web-voice-kit
 # or
-yarn add @your-scope/voice-sdk
+yarn add web-voice-kit
 ```
 
 For local development in this repo, install deps and build:
@@ -27,8 +27,9 @@ npm run build
 
 ## Usage
 
+Basic usage with built-in Web Speech API transcriber:
 ```ts
-import { VoiceSDK } from '@your-scope/voice-sdk';
+import { VoiceSDK } from 'web-voice-kit';
 
 const sdk = new VoiceSDK({
   wakeWord: 'hey voice',
@@ -40,6 +41,39 @@ const sdk = new VoiceSDK({
   onTranscript: (text, isFinal) => console.log('Transcript:', text, isFinal),
   onError: (e) => console.error('VoiceSDK error:', e),
 });
+```
+
+### Use iFlytek (讯飞) real-time transcription with minimal config
+```ts
+import { VoiceSDK } from 'web-voice-kit';
+
+const sdk = new VoiceSDK({
+  // Only appId and apiKey are required to enable Xunfei adapter automatically
+  xunfei: {
+    appId: 'YOUR_APP_ID',
+    apiKey: 'YOUR_API_KEY',
+    // optional overrides:
+    // sampleRate: 16000,
+    // frameSize: 1280,
+    // vadThreshold: 0.005,
+  },
+  interimResults: true,
+  locale: 'zh-CN',
+}, {
+  onTranscript: (text, isFinal) => console.log('ASR:', text, isFinal),
+  onError: (e) => console.error('VoiceSDK error:', e),
+});
+
+await sdk.start();
+// ...
+await sdk.stop();
+```
+
+Advanced: direct access to the adapter
+```ts
+import { IatTranscriber, VoiceSDK } from 'web-voice-kit';
+const transcriber = new IatTranscriber({ appId: '...', apiKey: '...' });
+const sdk = new VoiceSDK({ transcriber });
 ```
 
 ## Browser Support
