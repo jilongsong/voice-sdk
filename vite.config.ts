@@ -9,12 +9,16 @@ export default defineConfig({
       entry: path.resolve(path.dirname(fileURLToPath(import.meta.url)), 'src/index.ts'),
       name: 'VoiceSDK',
       fileName: (format) => `voice-sdk.${format}.js`,
-      formats: ['es', 'cjs', 'umd']
+      // Keep modern formats only to avoid UMD post-transform issues and reduce bundle size
+      formats: ['es', 'cjs']
     },
     rollupOptions: {
-      external: [],
+      // Do not bundle heavy/optional deps; let consumers install them
+      external: ['vosk-browser', 'crypto-js'],
       output: {
-        globals: {}
+        globals: {
+          'crypto-js': 'CryptoJS'
+        }
       }
     },
     sourcemap: true
