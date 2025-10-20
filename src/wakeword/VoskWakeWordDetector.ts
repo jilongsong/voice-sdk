@@ -91,9 +91,15 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private async ensureAudio(): Promise<void> {
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      try { await this.audioContext.resume(); } catch (_) { /* ignore */ }
     }
     if (!this.micStream) {
-      this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      try {
+        this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      } catch (e) {
+        // Surface error via recognizer start path; caller should handle via onError
+        throw e;
+      }
     }
     if (!this.sourceNode) {
       this.sourceNode = this.audioContext.createMediaStreamSource(this.micStream);
@@ -102,6 +108,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       const bufferSize = 4096; // trade-off latency/cpu
       this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
       this.sourceNode.connect(this.processor);
+      // Connect to destination so onaudioprocess runs; ScriptProcessor outputs silence by default
+      // and will not produce audible feedback
       this.processor.connect(this.audioContext.destination);
 
       const inputRate = this.audioContext.sampleRate;

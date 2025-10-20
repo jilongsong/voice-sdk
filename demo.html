@@ -29,22 +29,9 @@
 </head>
 <body>
   <h1>web-voice-kit Demo</h1>
-  <p class="muted">演示：外部唤醒 + 讯飞实时转写（仅需 appId / apiKey）。建议使用 Chrome 或 Edge，并在 <code>localhost</code> 或 HTTPS 域名下测试麦克风权限。</p>
+  <p class="muted">演示：Vosk 持续唤醒 + 讯飞实时转写。页面加载后自动开始唤醒监听。建议使用 Chrome 或 Edge，并在 <code>localhost</code> 或 HTTPS 域名下测试麦克风权限。</p>
 
   <div class="row">
-    <label>appId</label>
-    <input id="appid" type="text" placeholder="YOUR_APP_ID" />
-    <label>apiKey</label>
-    <input id="apikey" type="password" placeholder="YOUR_API_KEY" />
-  </div>
-
-  <div class="row">
-    <label>wakeWord</label>
-  </div>
-
-  <div class="row">
-    <button id="btnStart">Start</button>
-    <button id="btnWake">Wake (外部唤醒)</button>
     <button id="btnStop">Stop</button>
     <button id="btnClear">Clear Log</button>
     <span id="status" class="pill">idle</span>
@@ -65,10 +52,11 @@
     import { VoiceSDK } from './dist/voice-sdk.es.js';
 
     const el = (id) => document.getElementById(id);
-    const $appid = el('appid');
-    const $apikey = el('apikey');
-    const $btnStart = el('btnStart');
-    const $btnWake = el('btnWake');
+    // 固定凭证（仅用于示例，请勿在生产页面暴露）
+    const APPID = 'aaba2df6';
+    const API_KEY = '7558247da85205738c299ae5bb0acc5d';
+    const WAKE_WORD = '小智';
+
     const $btnStop = el('btnStop');
     const $btnClear = el('btnClear');
     const $logs = el('logs');
@@ -97,10 +85,9 @@
       $status.className = 'pill';
     });
 
-    $btnStart.addEventListener('click', async () => {
+    // 页面加载自动启动
+    const autoStart = async () => {
       try {
-        const appId = $appid.value.trim();
-        const apiKey = $apikey.value.trim();
         if (sdk) {
           try { await sdk.stop(); } catch {}
           sdk = null;
@@ -108,13 +95,13 @@
         $trans.textContent = '';
 
         sdk = new VoiceSDK({
-          xunfei: { appId, apiKey },
-          wakeWord: '小智',
+          xunfei: { appId: APPID, apiKey: API_KEY },
+          wakeWord: WAKE_WORD,
           requireWakeBeforeTranscribe: true,
           emitBeforeWake: false,
           interimResults: true,
           locale: 'zh-CN',
-          endTimeoutMs: 1200, // 可按需调整静默结束时间
+          endTimeoutMs: 1200,
         }, {
           onTranscript: (text, isFinal) => {
             $trans.textContent = text + (isFinal ? ' [final]' : '');
@@ -136,17 +123,9 @@
         log('Start failed: ' + (e?.message || e), 'err');
         setStatus('error');
       }
-    });
+    };
 
-    $btnWake.addEventListener('click', async () => {
-      try {
-        if (!sdk) return;
-        await sdk.triggerWake();
-        log('triggerWake() called');
-      } catch (e) {
-        log('triggerWake failed: ' + (e?.message || e), 'err');
-      }
-    });
+    window.addEventListener('load', autoStart);
 
     $btnStop.addEventListener('click', async () => {
       try {
