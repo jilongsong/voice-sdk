@@ -57,11 +57,62 @@ const sdk = new VoiceSDK({
   onWake: () => console.log('Woke!'),
   onTranscript: (text, isFinal) => console.log('ASR:', text, isFinal),
   onError: (e) => console.error('VoiceSDK error:', e),
+  onWakeStatusChange: (status) => console.log('Wake status:', status),
+  onTranscriptionStatusChange: (status) => console.log('Transcription status:', status),
 });
 
 await sdk.start();
 // ... later
 await sdk.stop();
+```
+
+## Status Events
+
+The SDK provides two status tracking events to monitor the current state:
+
+### Wake Status
+- `listening` - SDK is actively listening for wake words
+- `woke` - Wake word detected, transcription session started
+- `timeout` - No speech detected after wake, returning to listening mode
+
+### Transcription Status  
+- `idle` - No active transcription session
+- `active` - Transcription session started, waiting for speech
+- `processing` - Actively processing speech input
+
+```ts
+const sdk = new VoiceSDK(options, {
+  onWakeStatusChange: (status) => {
+    switch(status) {
+      case 'listening':
+        console.log('Ready for wake word');
+        break;
+      case 'woke':
+        console.log('Wake word detected!');
+        break;
+      case 'timeout':
+        console.log('No speech detected, back to listening');
+        break;
+    }
+  },
+  onTranscriptionStatusChange: (status) => {
+    switch(status) {
+      case 'idle':
+        console.log('Transcription inactive');
+        break;
+      case 'active':
+        console.log('Ready for speech input');
+        break;
+      case 'processing':
+        console.log('Processing speech...');
+        break;
+    }
+  }
+});
+
+// Get current status
+console.log('Wake status:', sdk.getWakeStatus());
+console.log('Transcription status:', sdk.getTranscriptionStatus());
 ```
 
 ### Notes

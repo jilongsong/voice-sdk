@@ -2,10 +2,15 @@ import { SpeechTranscriber, SpeechTranscriberOptions, TranscriptionResult } from
 import { IatTranscriber, IatTranscriberOptions } from './adapters/xunfei/IatTranscriber';
 import { VoskWakeWordDetector } from './wakeword/VoskWakeWordDetector';
 
+export type WakeStatus = 'listening' | 'woke' | 'timeout';
+export type TranscriptionStatus = 'idle' | 'active' | 'processing';
+
 export type VoiceSDKEvents = {
   onWake?: () => void;
   onTranscript?: (text: string, isFinal: boolean, raw?: TranscriptionResult) => void;
   onError?: (error: Error) => void;
+  onWakeStatusChange?: (status: WakeStatus) => void;
+  onTranscriptionStatusChange?: (status: TranscriptionStatus) => void;
 };
 
 export type VoiceSDKOptions = SpeechTranscriberOptions & {
@@ -35,6 +40,8 @@ export class VoiceSDK {
   private lastSpeechActivity = 0;
   private hasSpeechActivity = false;
   private noSpeechTimer: number | null = null; // 唤醒后无语音超时定时器
+  private currentWakeStatus: WakeStatus = 'listening';
+  private currentTranscriptionStatus: TranscriptionStatus = 'idle';
 
   constructor(options: VoiceSDKOptions, events: VoiceSDKEvents = {}) {
     // Defaults with optimized timeouts for better UX
@@ -84,6 +91,11 @@ export class VoiceSDK {
       this.continuousStartTime = Date.now();
       this.lastSpeechActivity = Date.now();
       this.hasSpeechActivity = false;
+      
+      // Update status
+      this.updateWakeStatus('woke');
+      this.updateTranscriptionStatus('active');
+      
       this.events.onWake?.();
       
       // 启动无语音超时定时器
@@ -100,6 +112,10 @@ export class VoiceSDK {
 
     this.transcriber.onResult(this.handleResult);
     this.transcriber.onError((e) => this.events.onError?.(e));
+    
+    // Initialize status
+    this.updateWakeStatus('listening');
+    this.updateTranscriptionStatus('idle');
 
     if (!this.transcriber.isSupported) {
       throw new Error('No supported SpeechTranscriber available in this environment');
@@ -131,6 +147,9 @@ export class VoiceSDK {
         this.lastSpeechActivity = Date.now();
         this.lastActivityAt = Date.now();
         
+        // Update transcription status to processing when content is detected
+        this.updateTranscriptionStatus('processing');
+        
         // 检测到语音内容，取消无语音超时
         this.clearNoSpeechTimeout();
       }
@@ -147,6 +166,7 @@ export class VoiceSDK {
     
     this.noSpeechTimer = window.setTimeout(() => {
       console.log('[VoiceSDK] No speech detected after wake, returning to wake listening');
+      this.updateWakeStatus('timeout');
       this.finishUtterance();
     }, timeout);
   }
@@ -155,6 +175,20 @@ export class VoiceSDK {
     if (this.noSpeechTimer) {
       window.clearTimeout(this.noSpeechTimer);
       this.noSpeechTimer = null;
+    }
+  }
+
+  private updateWakeStatus(status: WakeStatus) {
+    if (this.currentWakeStatus !== status) {
+      this.currentWakeStatus = status;
+      this.events.onWakeStatusChange?.(status);
+    }
+  }
+
+  private updateTranscriptionStatus(status: TranscriptionStatus) {
+    if (this.currentTranscriptionStatus !== status) {
+      this.currentTranscriptionStatus = status;
+      this.events.onTranscriptionStatusChange?.(status);
     }
   }
 
@@ -243,6 +277,10 @@ export class VoiceSDK {
     this.lastSpeechActivity = 0;
     this.hasSpeechActivity = false;
     this.lastActivityAt = 0;
+    
+    // Update status back to listening
+    this.updateWakeStatus('listening');
+    this.updateTranscriptionStatus('idle');
     
     // 清理所有定时器
     if (this.endTimer) {
@@ -343,6 +381,8 @@ export class VoiceSDK {
 
   isActive(): boolean { return this.active; }
   isWoke(): boolean { return this.woke; }
+  getWakeStatus(): WakeStatus { return this.currentWakeStatus; }
+  getTranscriptionStatus(): TranscriptionStatus { return this.currentTranscriptionStatus; }
   
   /**
    * Check if microphone permission is granted
