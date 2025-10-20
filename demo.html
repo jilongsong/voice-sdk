@@ -4,14 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>web-voice-kit Demo (iFlytek)</title>
-  <!-- Import map: resolve externalized ESM dependency 'crypto-js' for the browser demo -->
-  <script type="importmap">
-    {
-      "imports": {
-        "crypto-js": "https://esm.sh/crypto-js@4.2.0"
-      }
-    }
-  </script>
+  <!-- Dependencies are now bundled directly in the SDK -->
   <style>
     body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: #222; }
     .row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
@@ -30,8 +23,10 @@
 <body>
   <h1>web-voice-kit Demo</h1>
   <p class="muted">演示：Vosk 持续唤醒 + 讯飞实时转写。页面加载后自动开始唤醒监听。建议使用 Chrome 或 Edge，并在 <code>localhost</code> 或 HTTPS 域名下测试麦克风权限。</p>
+  <p class="muted"><strong>重构说明：</strong>已优化 Vosk 模型加载、替换为 AudioWorklet、集成自动麦克风权限处理，提升 npm 包分发兼容性。现在只需调用 start() 即可自动处理所有权限和初始化。</p>
 
   <div class="row">
+    <button id="btnStart">Start</button>
     <button id="btnStop">Stop</button>
     <button id="btnClear">Clear Log</button>
     <span id="status" class="pill">idle</span>
@@ -57,6 +52,7 @@
     const API_KEY = '7558247da85205738c299ae5bb0acc5d';
     const WAKE_WORD = '小智';
 
+    const $btnStart = el('btnStart');
     const $btnStop = el('btnStop');
     const $btnClear = el('btnClear');
     const $logs = el('logs');
@@ -85,14 +81,17 @@
       $status.className = 'pill';
     });
 
-    // 页面加载自动启动
-    const autoStart = async () => {
+    // 启动 SDK
+    const startSDK = async () => {
       try {
         if (sdk) {
           try { await sdk.stop(); } catch {}
           sdk = null;
         }
         $trans.textContent = '';
+
+        log('正在初始化 VoiceSDK...', 'ok');
+        setStatus('initializing');
 
         sdk = new VoiceSDK({
           xunfei: { appId: APPID, apiKey: API_KEY },
@@ -102,30 +101,48 @@
           interimResults: true,
           locale: 'zh-CN',
           endTimeoutMs: 1200,
+          // 可选：指定模型路径，留空使用默认路径
+          // voskModelPath: './custom-model.zip'
         }, {
           onTranscript: (text, isFinal) => {
             $trans.textContent = text + (isFinal ? ' [final]' : '');
+            if (isFinal) {
+              log(`转写结果: ${text}`, 'ok');
+            }
           },
           onError: (e) => {
             log('Error: ' + (e?.message || e), 'err');
             setStatus('error');
           },
           onWake: () => {
-            log('Woke!', 'ok');
+            log(`唤醒词 "${WAKE_WORD}" 检测到！开始语音转写...`, 'ok');
             setStatus('woke');
           }
         });
 
+        log('正在启动语音监听...', 'ok');
         await sdk.start();
         setStatus('listening');
-        log('SDK started. 正在进行持续唤醒监听...', 'ok');
+        log(`SDK 启动成功！正在监听唤醒词 "${WAKE_WORD}"...`, 'ok');
       } catch (e) {
-        log('Start failed: ' + (e?.message || e), 'err');
+        log('启动失败: ' + (e?.message || e), 'err');
         setStatus('error');
+        
+        // 提供更详细的错误信息
+        if (e?.message?.includes('permission')) {
+          log('提示：麦克风权限被拒绝，请在浏览器设置中允许麦克风访问后重试', 'warn');
+        } else if (e?.message?.includes('model')) {
+          log('提示：Vosk 模型加载失败，请检查网络连接', 'warn');
+        }
       }
     };
 
-    window.addEventListener('load', autoStart);
+    // 页面加载后提示用户
+    window.addEventListener('load', () => {
+      log('页面已加载。点击 "Start" 开始语音识别，SDK 会自动处理麦克风权限。', 'ok');
+    });
+
+    $btnStart.addEventListener('click', startSDK);
 
     $btnStop.addEventListener('click', async () => {
       try {

@@ -7,4 +7,7 @@ export interface WakeWordDetector {
   start?(): Promise<void>;
   stop?(): Promise<void>;
   onWake?(cb: () => void): void;
+  // Optional microphone permission methods
+  isMicrophonePermissionGranted?(): boolean;
+  requestMicrophonePermission?(): Promise<boolean>;
 }

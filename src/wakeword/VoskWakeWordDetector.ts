@@ -6,13 +6,8 @@
 */
 
 import type { WakeWordDetector } from './WakeWordDetector';
-// Default bundled model URL (served by bundler)
-import defaultModelUrl from '../vosk-model-small-cn-0.22.zip?url';
-
-// Import as any to avoid type frictions if no types installed
-// eslint-disable-next-line @typescript-eslint/no-var-requires
-// import * as Vosk from 'vosk-browser';
-// Use dynamic import to avoid bundling issues when not used.
+import { ModelLoader } from '../utils/ModelLoader';
+import * as Vosk from 'vosk-browser';
 
 export interface VoskWakeWordOptions {
   modelPath?: string; // directory, tar.gz, or zip; if omitted, use built-in model asset
@@ -29,9 +24,9 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private audioContext?: AudioContext;
   private micStream?: MediaStream;
   private sourceNode?: MediaStreamAudioSourceNode;
-  private processor?: ScriptProcessorNode;
+  private workletNode?: AudioWorkletNode;
+  private permissionGranted = false;
 
-  private Vosk: any;
   private model: any;
   private recognizer: any;
 
@@ -58,15 +53,12 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   }
 
   async init(): Promise<void> {
-    if (!this.Vosk) {
-      this.Vosk = await import('vosk-browser');
-    }
     if (!this.model) {
-      const modelPath = this.options.modelPath || defaultModelUrl;
-      this.model = await this.Vosk.createModel(modelPath);
+      this.model = await ModelLoader.loadModel(Vosk, this.options.modelPath);
     }
     if (!this.recognizer) {
-      this.recognizer = new this.model.KaldiRecognizer();
+      // KaldiRecognizer requires sample rate parameter
+      this.recognizer = new this.model.KaldiRecognizer(this.options.sampleRate);
       // Wire events
       this.recognizer.on('result', (msg: any) => {
         const text: string = msg?.result?.text || '';
@@ -80,6 +72,26 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     }
   }
 
+
+  async requestMicrophonePermission(): Promise<boolean> {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach(track => track.stop()); // Stop immediately, just testing permission
+      this.permissionGranted = true;
+      return true;
+    } catch (error) {
+      this.permissionGranted = false;
+      throw new Error(`Microphone permission denied. Please allow microphone access in your browser settings. Details: ${error}`);
+    }
+  }
+
+  /**
+   * Check if microphone permission is already granted
+   */
+  isMicrophonePermissionGranted(): boolean {
+    return this.permissionGranted;
+  }
+
   private maybeWake(text: string, _isFinal: boolean) {
     if (!this.phrase || this.triggered) return;
     if ((text || '').toLowerCase().includes(this.phrase)) {
@@ -89,43 +101,161 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   }
 
   private async ensureAudio(): Promise<void> {
+    // Automatically request permission if not granted
+    if (!this.permissionGranted) {
+      await this.requestMicrophonePermission();
+    }
+
     if (!this.audioContext) {
       this.audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       try { await this.audioContext.resume(); } catch (_) { /* ignore */ }
     }
+    
     if (!this.micStream) {
       try {
-        this.micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        this.micStream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            sampleRate: this.options.sampleRate,
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true
+          }
+        });
       } catch (e) {
-        // Surface error via recognizer start path; caller should handle via onError
-        throw e;
+        throw new Error(`Failed to access microphone: ${e}`);
       }
     }
+    
     if (!this.sourceNode) {
       this.sourceNode = this.audioContext.createMediaStreamSource(this.micStream);
     }
-    if (!this.processor) {
-      const bufferSize = 4096; // trade-off latency/cpu
-      this.processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
-      this.sourceNode.connect(this.processor);
-      // Connect to destination so onaudioprocess runs; ScriptProcessor outputs silence by default
-      // and will not produce audible feedback
-      this.processor.connect(this.audioContext.destination);
+    
+    if (!this.workletNode) {
+      try {
+        // Try to load AudioWorklet processor
+        // Create a blob URL for the processor code since we can't use import.meta.url in demo
+        const processorCode = `
+          class VoskAudioProcessor extends AudioWorkletProcessor {
+            constructor(options) {
+              super();
+              this.sampleRate = options?.processorOptions?.sampleRate || 48000;
+              this.targetRate = options?.processorOptions?.targetRate || 16000;
+              
+              this.port.onmessage = (event) => {
+                if (event.data.type === 'updateSampleRate') {
+                  this.sampleRate = event.data.sampleRate;
+                }
+              };
+            }
 
-      const inputRate = this.audioContext.sampleRate;
-      const targetRate = this.options.sampleRate;
+            process(inputs, outputs, parameters) {
+              const input = inputs[0];
+              if (!input || !input[0]) return true;
 
-      this.processor.onaudioprocess = (e: AudioProcessingEvent) => {
-        const input = e.inputBuffer.getChannelData(0); // Float32 [-1,1]
-        const floatMono = input.slice(0); // copy
-        const pcm16 = this.resampleTo16kPCM(floatMono, inputRate, targetRate);
-        try {
-          this.recognizer?.acceptWaveform(pcm16);
-        } catch (_) {
-          // swallow, recognizer may not be ready
-        }
-      };
+              const inputData = input[0];
+              const resampledData = this.resampleTo16kPCM(inputData, this.sampleRate, this.targetRate);
+              
+              this.port.postMessage({
+                type: 'audioData',
+                data: resampledData
+              });
+
+              return true;
+            }
+
+            resampleTo16kPCM(input, inputRate, targetRate) {
+              if (inputRate === targetRate) {
+                const out = new Int16Array(input.length);
+                for (let i = 0; i < input.length; i++) {
+                  const s = Math.max(-1, Math.min(1, input[i]));
+                  out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                }
+                return out;
+              }
+
+              const ratio = inputRate / targetRate;
+              const newLen = Math.floor(input.length / ratio);
+              const out = new Int16Array(newLen);
+              let i = 0;
+              let pos = 0;
+
+              while (i < newLen) {
+                const nextPos = (i + 1) * ratio;
+                let sum = 0;
+                let count = 0;
+                while (pos < nextPos && pos < input.length) {
+                  sum += input[pos] || 0;
+                  pos++;
+                  count++;
+                }
+                const sample = count ? (sum / count) : 0;
+                const s = Math.max(-1, Math.min(1, sample));
+                out[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+                i++;
+              }
+              return out;
+            }
+          }
+
+          registerProcessor('vosk-audio-processor', VoskAudioProcessor);
+        `;
+        
+        const blob = new Blob([processorCode], { type: 'application/javascript' });
+        const processorUrl = URL.createObjectURL(blob);
+        
+        await this.audioContext.audioWorklet.addModule(processorUrl);
+        
+        this.workletNode = new AudioWorkletNode(this.audioContext, 'vosk-audio-processor', {
+          processorOptions: {
+            sampleRate: this.audioContext.sampleRate,
+            targetRate: this.options.sampleRate
+          }
+        });
+        
+        // Handle audio data from worklet
+        this.workletNode.port.onmessage = (event) => {
+          if (event.data.type === 'audioData') {
+            try {
+              this.recognizer?.acceptWaveform(event.data.data);
+            } catch (_) {
+              // swallow, recognizer may not be ready
+            }
+          }
+        };
+        
+        this.sourceNode.connect(this.workletNode);
+        
+        // Clean up the blob URL
+        URL.revokeObjectURL(processorUrl);
+      } catch (error) {
+        // Fallback to ScriptProcessorNode for older browsers
+        console.warn('AudioWorklet not supported, falling back to ScriptProcessorNode:', error);
+        await this.setupScriptProcessorFallback();
+      }
     }
+  }
+
+  private async setupScriptProcessorFallback(): Promise<void> {
+    if (!this.audioContext || !this.sourceNode) return;
+    
+    const bufferSize = 4096;
+    const processor = this.audioContext.createScriptProcessor(bufferSize, 1, 1);
+    this.sourceNode.connect(processor);
+    processor.connect(this.audioContext.destination);
+
+    const inputRate = this.audioContext.sampleRate;
+    const targetRate = this.options.sampleRate;
+
+    processor.onaudioprocess = (e: AudioProcessingEvent) => {
+      const input = e.inputBuffer.getChannelData(0);
+      const floatMono = input.slice(0);
+      const pcm16 = this.resampleTo16kPCM(floatMono, inputRate, targetRate);
+      try {
+        this.recognizer?.acceptWaveform(pcm16);
+      } catch (_) {
+        // swallow, recognizer may not be ready
+      }
+    };
   }
 
   private resampleTo16kPCM(input: Float32Array, inputRate: number, targetRate: number): Int16Array {
@@ -168,10 +298,9 @@ export class VoskWakeWordDetector implements WakeWordDetector {
 
   async stop(): Promise<void> {
     try {
-      if (this.processor) {
-        this.processor.disconnect();
-        this.processor.onaudioprocess = null as any;
-        this.processor = undefined;
+      if (this.workletNode) {
+        this.workletNode.disconnect();
+        this.workletNode = undefined;
       }
       if (this.sourceNode) {
         this.sourceNode.disconnect();
@@ -181,7 +310,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         this.micStream.getTracks().forEach(t => t.stop());
         this.micStream = undefined;
       }
-      if (this.audioContext) {
+      if (this.audioContext && this.audioContext.state !== 'closed') {
         await this.audioContext.close();
         this.audioContext = undefined;
       }

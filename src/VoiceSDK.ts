@@ -57,7 +57,7 @@ export class VoiceSDK {
     this.wakeDetector = new VoskWakeWordDetector({ modelPath: options.voskModelPath });
     this.wakeDetector.setWakeWord(options.wakeWord);
 
-    // Wire onWake to start ASR when required
+      // Wire onWake to start ASR when required
     this.wakeDetector.onWake?.(() => {
       if (this.woke) return;
       this.woke = true;
@@ -165,17 +165,34 @@ export class VoiceSDK {
       window.clearTimeout(this.endTimer);
       this.endTimer = null;
     }
-    // Start wake detector if it provides lifecycle
+    
+    // Start wake detector (which will automatically handle microphone permission)
     try {
       await this.wakeDetector.init?.();
       await this.wakeDetector.start?.();
     } catch (e) {
-      this.events.onError?.(e as Error);
+      const error = e as Error;
+      // Provide more user-friendly error messages
+      if (error.message.includes('permission')) {
+        this.events.onError?.(new Error('Microphone permission is required. Please allow microphone access in your browser and try again.'));
+      } else if (error.message.includes('model')) {
+        this.events.onError?.(new Error('Failed to load voice recognition model. Please check your internet connection.'));
+      } else {
+        this.events.onError?.(new Error(`Failed to start wake word detector: ${error.message}`));
+      }
+      throw error;
     }
+    
     const requireWake = this.options.requireWakeBeforeTranscribe ?? true;
     if (!requireWake) {
-      await this.transcriber.start();
-      this.transcriberStarted = true;
+      try {
+        await this.transcriber.start();
+        this.transcriberStarted = true;
+      } catch (e) {
+        const error = e as Error;
+        this.events.onError?.(new Error(`Failed to start transcriber: ${error.message}`));
+        throw error;
+      }
     }
   }
 
@@ -186,14 +203,23 @@ export class VoiceSDK {
       window.clearTimeout(this.endTimer);
       this.endTimer = null;
     }
+    
+    // Stop transcriber first
     if (this.transcriberStarted) {
-      await this.transcriber.stop();
-      this.transcriberStarted = false;
+      try {
+        await this.transcriber.stop();
+      } catch (e) {
+        console.warn('Error stopping transcriber:', e);
+      } finally {
+        this.transcriberStarted = false;
+      }
     }
+    
+    // Stop wake detector
     try {
       await this.wakeDetector.stop?.();
     } catch (e) {
-      // ignore
+      console.warn('Error stopping wake detector:', e);
     }
   }
 
@@ -209,6 +235,13 @@ export class VoiceSDK {
 
   isActive(): boolean { return this.active; }
   isWoke(): boolean { return this.woke; }
+  
+  /**
+   * Check if microphone permission is granted
+   */
+  isMicrophonePermissionGranted(): boolean {
+    return this.wakeDetector.isMicrophonePermissionGranted?.() ?? false;
+  }
 
   async triggerWake(): Promise<void> {
     if (this.woke) return;
