@@ -15,6 +15,7 @@ export type VoiceSDKEvents = {
 
 export type VoiceSDKOptions = SpeechTranscriberOptions & {
   wakeWord: string | string[];
+  voskModelPath?: string; // Vosk模型路径
   xunfei: Pick<IatTranscriberOptions, 'appId' | 'apiKey' | 'sampleRate' | 'frameSize' | 'vadThreshold'>;
   autoStart?: boolean;
   emitBeforeWake?: boolean;
@@ -77,7 +78,9 @@ export class VoiceSDK {
     };
     this.transcriber = new IatTranscriber(xfOpts);
 
-    this.wakeDetector = new VoskWakeWordDetector({});
+    this.wakeDetector = new VoskWakeWordDetector({
+      modelPath: options.voskModelPath
+    });
     if (Array.isArray(options.wakeWord)) {
       this.wakeDetector.setWakeWords(options.wakeWord);
     } else {

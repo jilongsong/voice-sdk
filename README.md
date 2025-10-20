@@ -32,8 +32,10 @@ Minimal example:
 import { VoiceSDK } from 'web-voice-kit';
 
 const sdk = new VoiceSDK({
-  // Required: wake word phrase and Vosk model path
+  // Required: wake word phrase
   wakeWord: '嘿，小智',
+  
+  // Required: Vosk model path - MUST be provided when using as npm package
   voskModelPath: '/models/vosk-model-small-zh-cn-0.22.zip', // or a directory URL
 
   // Required: iFlytek credentials
@@ -115,11 +117,35 @@ console.log('Wake status:', sdk.getWakeStatus());
 console.log('Transcription status:', sdk.getTranscriptionStatus());
 ```
 
+### Model Setup
+
+**IMPORTANT**: When using this SDK as an npm package, you **MUST** provide the `voskModelPath` option:
+
+```ts
+const sdk = new VoiceSDK({
+  wakeWord: '嘿，小智',
+  voskModelPath: '/path/to/vosk-model.zip', // Required!
+  xunfei: { /* ... */ }
+});
+```
+
+**Model Options:**
+1. **Download a Vosk model** from [Vosk Models](https://alphacephei.com/vosk/models) 
+2. **Host the model file** on your web server or CDN
+3. **Set the correct path** - can be:
+   - A zip archive: `/models/vosk-model-small-zh-cn-0.22.zip`
+   - A directory URL: `/models/vosk-model-small-zh-cn-0.22/`
+   - A CDN URL: `https://cdn.example.com/vosk-model.zip`
+
+**Common Issues:**
+- ❌ "Unrecognized archive format" - Model path is incorrect or file not accessible
+- ❌ CORS errors - Ensure proper CORS headers if loading from different domain
+- ❌ 404 errors - Model file not found at specified path
+
 ### Notes
-- If you don't pass `voskModelPath`, the SDK uses a bundled small Chinese Vosk model by default.
-- If you prefer your own model, set `voskModelPath` to a directory URL or an archive (zip/tar.gz). The model must be accessible from the browser (local dev server or CDN). Ensure proper CORS/HTTPS settings.
-- `endTimeoutMs` controls how quickly an utterance ends after wake if the user stops speaking. Tune based on UX.
-- The SDK uses a single mic source for wake and ASR; permissions are requested by the browser.
+- The model must be accessible from the browser with proper CORS/HTTPS settings
+- `endTimeoutMs` controls how quickly an utterance ends after wake if the user stops speaking
+- The SDK uses a single mic source for wake and ASR; permissions are requested by the browser
 
 ## Browser Support
 

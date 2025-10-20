@@ -25,7 +25,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
 
   constructor(opts: VoskWakeWordOptions) {
     this.options = { 
-      modelPath: './vosk-model-small-cn-0.22.zip',
+      modelPath: opts.modelPath || '',
       sampleRate: 16000, 
       usePartial: true, 
       ...opts 
@@ -59,7 +59,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       console.log('[VoskWakeWordDetector] Loading Vosk model...');
       
       if (!this.options.modelPath) {
-        throw new Error('Model path is required but not provided');
+        throw new Error('Model path is required but not provided. Please specify voskModelPath in VoiceSDK options.');
       }
       
       try {
@@ -67,7 +67,9 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         console.log('[VoskWakeWordDetector] Model loaded successfully');
       } catch (error) {
         console.error('[VoskWakeWordDetector] Model loading failed:', error);
-        throw error;
+        console.error('[VoskWakeWordDetector] Make sure the model path is correct and accessible from the browser');
+        console.error('[VoskWakeWordDetector] Current model path:', this.options.modelPath);
+        throw new Error(`Failed to load Vosk model from "${this.options.modelPath}". ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     
