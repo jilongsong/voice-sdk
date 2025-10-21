@@ -1,5 +1,6 @@
 import { WakeWordDetector } from './WakeWordDetector';
 import { createModel } from 'vosk-browser';
+
 export interface VoskWakeWordOptions {
   modelPath?: string;
   sampleRate?: number;
@@ -10,18 +11,43 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private options: Required<VoskWakeWordOptions>;
   private onWakeCb?: () => void;
   private phrases: string[] = [];
+  // Store normalized phrases for scoring
+  private phrasesNorm: string[] = [];
   private triggered = false;
   private permissionGranted = false;
-  
+
   // Audio processing
   private audioContext?: AudioContext;
   private sourceNode?: MediaStreamAudioSourceNode;
   private workletNode?: ScriptProcessorNode | AudioWorkletNode;
+  private muteGain?: GainNode; // zero-gain node to keep graph alive without sound
   private stream?: MediaStream;
-  
+  private onDeviceChange?: () => void;
+
   // Vosk components
   private model: any;
   private recognizer: any;
+
+  // Internal scoring and buffering
+  private partialBuffer: string = '';
+  private readonly maxBufferLen: number = 48; // number of Chinese chars to keep
+  private consecutiveHits: number = 0;
+  private lastTriggerTs = 0;
+  private readonly refractoryMs = 1500; // avoid re-triggering too frequently
+  private readonly partialThreshold = 0.78;
+  private readonly finalThreshold = 0.85;
+  private readonly requiredConsecutivePartialHits = 2;
+
+  // Health monitor
+  private healthTimer?: number;
+  private readonly healthIntervalMs = 2000;
+
+  // Audio processing buffers to reduce allocations
+  private tempBoostBuffer?: Float32Array;
+  private accumBuffer?: Float32Array;
+  private accumIndex: number = 0;
+  private readonly accumChunkSize = 8192; // feed recognizer per ~0.5s at 16kHz
+  private usingAudioWorklet = false;
 
   constructor(opts: VoskWakeWordOptions) {
     this.options = { 
@@ -33,17 +59,27 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   }
 
   setWakeWord(phrase: string): void {
-    this.phrases = [(phrase || '').trim().toLowerCase()];
+    const raw = (phrase || '').trim();
+    this.phrases = [raw.toLowerCase()];
+    this.phrasesNorm = [this.normalizeChinese(raw)];
     this.triggered = false;
+    this.consecutiveHits = 0;
+    this.partialBuffer = '';
   }
 
   setWakeWords(phrases: string[]): void {
-    this.phrases = phrases.map(p => (p || '').trim().toLowerCase()).filter(p => p.length > 0);
+    const cleaned = phrases.map(p => (p || '').trim()).filter(p => p.length > 0);
+    this.phrases = cleaned.map(p => p.toLowerCase());
+    this.phrasesNorm = cleaned.map(p => this.normalizeChinese(p));
     this.triggered = false;
+    this.consecutiveHits = 0;
+    this.partialBuffer = '';
   }
 
   reset(): void {
     this.triggered = false;
+    this.consecutiveHits = 0;
+    this.partialBuffer = '';
   }
 
   inspect(_transcriptChunk: string, _isFinal: boolean): boolean {
@@ -123,15 +159,50 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       return;
     }
     
-    const lowerText = (text || '').toLowerCase();
-    
-    // Check if any of the wake words match
-    for (const phrase of this.phrases) {
-      if (lowerText.includes(phrase)) {
+    // Refractory to avoid repeated triggers
+    const now = Date.now();
+    if (now - this.lastTriggerTs < this.refractoryMs) {
+      return;
+    }
+
+    const normIncoming = this.normalizeChinese(text || '');
+
+    // Maintain a short rolling buffer for partials to stabilize scoring
+    if (!isFinal) {
+      this.partialBuffer = (this.partialBuffer + normIncoming).slice(-this.maxBufferLen);
+    }
+
+    // Decide which text to score: for final results use the current normIncoming,
+    // for partials use the accumulated buffer
+    const candidate = isFinal ? normIncoming : this.partialBuffer;
+
+    if (!candidate) return;
+
+    let maxScore = 0;
+    for (const phraseNorm of this.phrasesNorm) {
+      const score = this.scoreCandidate(candidate, phraseNorm);
+      if (score > maxScore) maxScore = score;
+    }
+
+    const threshold = isFinal ? this.finalThreshold : this.partialThreshold;
+
+    if (maxScore >= threshold) {
+      if (isFinal) {
         this.triggered = true;
+        this.lastTriggerTs = now;
         this.onWakeCb?.();
         return;
       }
+      // Partial results: require stability across consecutive frames
+      this.consecutiveHits += 1;
+      if (this.consecutiveHits >= this.requiredConsecutivePartialHits) {
+        this.triggered = true;
+        this.lastTriggerTs = now;
+        this.onWakeCb?.();
+      }
+    } else if (!isFinal) {
+      // decay when not meeting threshold on partials
+      this.consecutiveHits = Math.max(0, this.consecutiveHits - 1);
     }
   }
 
@@ -159,6 +230,14 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         } 
       });
       console.log('[VoskWakeWordDetector] Microphone stream acquired');
+      // Watch for track end to auto-recover
+      this.stream.getTracks().forEach(track => {
+        track.onended = () => {
+          console.warn('[VoskWakeWordDetector] MediaStreamTrack ended, scheduling recovery');
+          // Let health monitor pick it up or do immediate recovery
+          setTimeout(() => this.startHealthMonitor(), 100);
+        };
+      });
     }
 
     if (!this.sourceNode) {
@@ -167,7 +246,10 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     }
 
     if (!this.workletNode) {
-      await this.setupScriptProcessor();
+      const ok = await this.setupAudioWorklet();
+      if (!ok) {
+        await this.setupScriptProcessor();
+      }
     }
   }
 
@@ -183,41 +265,191 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     processor.onaudioprocess = (event: AudioProcessingEvent) => {
       try {
         audioLogCounter++;
-        
+
         const channelData = event.inputBuffer.getChannelData(0);
-        
-        // Apply gain boost like in the React hook example
-        const boostedData = new Float32Array(channelData.length);
-        const gainMultiplier = 5.0;
-        for (let i = 0; i < channelData.length; i++) {
-          boostedData[i] = Math.min(1.0, Math.max(-1.0, channelData[i] * gainMultiplier));
+
+        // Prepare reusable buffers
+        if (!this.tempBoostBuffer || this.tempBoostBuffer.length !== channelData.length) {
+          this.tempBoostBuffer = new Float32Array(channelData.length);
         }
-        
-        // Check volume level
-        const maxVolume = Math.max(...Array.from(boostedData).map(Math.abs));
-        if (maxVolume > 0.01) {
-          // Use the correct Vosk API based on the React hook example
-          if (this.recognizer.acceptWaveformFloat) {
-            this.recognizer.acceptWaveformFloat(boostedData, this.options.sampleRate);
-          } else {
-            this.recognizer.acceptWaveform(event.inputBuffer);
+        if (!this.accumBuffer) {
+          this.accumBuffer = new Float32Array(this.accumChunkSize);
+          this.accumIndex = 0;
+        }
+
+        // Gain + max abs in one pass
+        const gainMultiplier = 5.0;
+        let maxAbs = 0;
+        const len = channelData.length;
+        for (let i = 0; i < len; i++) {
+          const v = channelData[i] * gainMultiplier;
+          const clamped = v > 1 ? 1 : (v < -1 ? -1 : v);
+          this.tempBoostBuffer[i] = clamped;
+          const a = clamped < 0 ? -clamped : clamped;
+          if (a > maxAbs) maxAbs = a;
+        }
+
+        // Skip feeding if too quiet to reduce CPU + internal logs
+        if (maxAbs <= 0.01) return;
+
+        // Accumulate and feed in larger chunks to reduce recognizer call frequency/logs
+        let srcOff = 0;
+        while (srcOff < len) {
+          const space = this.accumChunkSize - this.accumIndex;
+          const copyLen = Math.min(space, len - srcOff);
+          this.accumBuffer.set(this.tempBoostBuffer.subarray(srcOff, srcOff + copyLen), this.accumIndex);
+          this.accumIndex += copyLen;
+          srcOff += copyLen;
+
+          if (this.accumIndex >= this.accumChunkSize) {
+            if (this.recognizer.acceptWaveformFloat) {
+              this.recognizer.acceptWaveformFloat(this.accumBuffer, this.options.sampleRate);
+            } else {
+              // As a fallback, wrap the buffer into an AudioBuffer (rare path)
+              const abuf = this.audioContext!.createBuffer(1, this.accumChunkSize, this.options.sampleRate);
+              const ch0 = abuf.getChannelData(0);
+              ch0.set(this.accumBuffer, 0);
+              this.recognizer.acceptWaveform(abuf);
+            }
+            this.accumIndex = 0; // reset buffer
           }
         }
       } catch (error) {
         console.error('[VoskWakeWordDetector] Audio processing error:', error);
       }
     };
-    
+    // Build a silent chain: source -> processor -> muteGain(0) -> destination
+    this.muteGain = this.audioContext.createGain();
+    this.muteGain.gain.value = 0;
     this.sourceNode.connect(processor);
-    processor.connect(this.audioContext.destination);
+    processor.connect(this.muteGain);
+    this.muteGain.connect(this.audioContext.destination);
     
     console.log('[VoskWakeWordDetector] ScriptProcessor connected successfully');
+  }
+
+  private async setupAudioWorklet(): Promise<boolean> {
+    if (!this.audioContext || !this.sourceNode || !this.recognizer) return false;
+    if (!('audioWorklet' in this.audioContext)) return false;
+
+    try {
+      // Dynamically create a minimal worklet processor module
+      const moduleCode = `
+        class VoskAudioProcessor extends AudioWorkletProcessor {
+          constructor(options) {
+            super();
+            const opts = (options && options.processorOptions) || {};
+            this.inputRate = opts.sampleRate || 48000;
+            this.targetRate = opts.targetRate || 16000;
+            this._ratio = this.inputRate / this.targetRate;
+            this._acc = 0;
+          }
+          process(inputs, outputs, parameters) {
+            const input = inputs[0];
+            const output = outputs[0];
+            if (input && input[0]) {
+              const chIn = input[0];
+              // Pass-through to output to keep graph alive
+              if (output && output[0]) {
+                const chOut = output[0];
+                const n = Math.min(chOut.length, chIn.length);
+                for (let i = 0; i < n; i++) chOut[i] = chIn[i];
+              }
+              // Downsample to targetRate and post Float32Array
+              const ratio = this._ratio;
+              const outLen = Math.floor(chIn.length / ratio);
+              if (outLen > 0) {
+                const data = new Float32Array(outLen);
+                let pos = 0;
+                let i = 0;
+                while (i < outLen) {
+                  const nextPos = (i + 1) * ratio;
+                  let sum = 0, count = 0;
+                  while (pos < nextPos && pos < chIn.length) { sum += chIn[pos++]; count++; }
+                  data[i++] = count ? (sum / count) : 0;
+                }
+                // Transfer buffer to main thread to minimize copy cost
+                this.port.postMessage({ type: 'audioData', data }, [data.buffer]);
+              }
+            }
+            return true;
+          }
+        }
+        registerProcessor('vosk-audio-processor', VoskAudioProcessor);
+      `;
+      const blobUrl = URL.createObjectURL(new Blob([moduleCode], { type: 'application/javascript' }));
+      await this.audioContext.audioWorklet.addModule(blobUrl);
+      URL.revokeObjectURL(blobUrl);
+
+      const node = new AudioWorkletNode(this.audioContext, 'vosk-audio-processor', {
+        numberOfInputs: 1,
+        numberOfOutputs: 1,
+        outputChannelCount: [1],
+        processorOptions: { sampleRate: this.audioContext.sampleRate, targetRate: this.options.sampleRate }
+      } as any);
+      this.workletNode = node;
+      this.usingAudioWorklet = true;
+
+      // Accumulate chunks from worklet messages and feed recognizer
+      node.port.onmessage = (event: MessageEvent) => {
+        const msg = event.data;
+        if (!msg || msg.type !== 'audioData') return;
+        const data: Float32Array = msg.data as Float32Array; // already 16kHz
+        if (!this.accumBuffer) {
+          this.accumBuffer = new Float32Array(this.accumChunkSize);
+          this.accumIndex = 0;
+        }
+        let srcOff = 0;
+        const len = data.length;
+        while (srcOff < len) {
+          const space = this.accumChunkSize - this.accumIndex;
+          const copyLen = Math.min(space, len - srcOff);
+          this.accumBuffer.set(data.subarray(srcOff, srcOff + copyLen), this.accumIndex);
+          this.accumIndex += copyLen;
+          srcOff += copyLen;
+          if (this.accumIndex >= this.accumChunkSize) {
+            if (this.recognizer.acceptWaveformFloat) {
+              this.recognizer.acceptWaveformFloat(this.accumBuffer, this.options.sampleRate);
+            } else {
+              const abuf = this.audioContext!.createBuffer(1, this.accumChunkSize, this.options.sampleRate);
+              const ch0 = abuf.getChannelData(0);
+              ch0.set(this.accumBuffer, 0);
+              this.recognizer.acceptWaveform(abuf);
+            }
+            this.accumIndex = 0;
+          }
+        }
+      };
+
+      // Build a silent chain: source -> worklet -> mute -> destination
+      this.muteGain = this.audioContext.createGain();
+      this.muteGain.gain.value = 0;
+      this.sourceNode.connect(node);
+      node.connect(this.muteGain);
+      this.muteGain.connect(this.audioContext.destination);
+
+      console.log('[VoskWakeWordDetector] AudioWorkletNode connected successfully');
+      return true;
+    } catch (err) {
+      console.warn('[VoskWakeWordDetector] Failed to setup AudioWorklet, falling back to ScriptProcessor:', err);
+      this.usingAudioWorklet = false;
+      return false;
+    }
   }
 
   async start(): Promise<void> {
     console.log('[VoskWakeWordDetector] Starting...');
     await this.init();
     await this.ensureAudio();
+    // Listen for device changes to reacquire input
+    if (!this.onDeviceChange) {
+      this.onDeviceChange = () => {
+        console.log('[VoskWakeWordDetector] Device change detected, triggering health check');
+        this.startHealthMonitor();
+      };
+      try { navigator.mediaDevices.addEventListener('devicechange', this.onDeviceChange); } catch {}
+    }
+    this.startHealthMonitor();
     console.log('[VoskWakeWordDetector] Started successfully');
   }
 
@@ -231,6 +463,10 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       }
       this.workletNode = undefined;
     }
+    if (this.muteGain) {
+      try { this.muteGain.disconnect(); } catch {}
+      this.muteGain = undefined;
+    }
     
     if (this.sourceNode) {
       this.sourceNode.disconnect();
@@ -241,6 +477,10 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       this.stream.getTracks().forEach(track => track.stop());
       this.stream = undefined;
     }
+    if (this.onDeviceChange) {
+      try { navigator.mediaDevices.removeEventListener('devicechange', this.onDeviceChange); } catch {}
+      this.onDeviceChange = undefined;
+    }
     
     if (this.audioContext && this.audioContext.state !== 'closed') {
       await this.audioContext.close();
@@ -248,6 +488,156 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     }
     
     this.triggered = false;
+    this.consecutiveHits = 0;
+    this.partialBuffer = '';
+    this.stopHealthMonitor();
     console.log('[VoskWakeWordDetector] Stopped successfully');
+  }
+
+  private startHealthMonitor() {
+    if (this.healthTimer) return;
+    const fn = async () => {
+      try {
+        // Ensure audio context is running
+        if (this.audioContext) {
+          if (this.audioContext.state === 'suspended') {
+            try {
+              await this.audioContext.resume();
+              console.log('[VoskWakeWordDetector] AudioContext resumed by health monitor');
+            } catch (e) {
+              // Some browsers require user gesture; just log and retry later
+              // console.warn('[VoskWakeWordDetector] Resume failed:', e);
+            }
+          }
+        }
+
+        // Ensure stream is alive
+        const hasDeadTrack = !!this.stream && this.stream.getTracks().some(t => t.readyState !== 'live');
+        if (!this.stream || hasDeadTrack) {
+          console.log('[VoskWakeWordDetector] Reacquiring microphone stream...');
+          // Recreate stream and graph
+          try {
+            if (this.stream) this.stream.getTracks().forEach(t => t.stop());
+          } catch {}
+          this.stream = await navigator.mediaDevices.getUserMedia({ 
+            audio: {
+              echoCancellation: true,
+              noiseSuppression: true,
+              channelCount: 1,
+              sampleRate: this.options.sampleRate
+            } 
+          });
+          if (this.audioContext) {
+            // Rebuild nodes
+            if (this.sourceNode) try { this.sourceNode.disconnect(); } catch {}
+            this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
+            if (!this.workletNode) {
+              const ok = await this.setupAudioWorklet();
+              if (!ok) await this.setupScriptProcessor();
+            } else {
+              try { (this.workletNode as AudioNode).disconnect(); } catch {}
+              if (this.muteGain) try { this.muteGain.disconnect(); } catch {}
+              // Reconnect chain: source -> node -> mute -> destination
+              this.muteGain = this.audioContext.createGain();
+              this.muteGain.gain.value = 0;
+              this.sourceNode.connect(this.workletNode as AudioNode);
+              (this.workletNode as AudioNode).connect(this.muteGain);
+              this.muteGain.connect(this.audioContext.destination);
+            }
+          }
+        }
+      } catch (err) {
+        console.error('[VoskWakeWordDetector] Health monitor error:', err);
+      }
+    };
+    // @ts-ignore - setInterval returns number in browsers
+    this.healthTimer = setInterval(fn, this.healthIntervalMs) as any as number;
+  }
+
+  private stopHealthMonitor() {
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = undefined;
+    }
+  }
+
+  // ========= Internal helpers for Chinese-friendly scoring =========
+  private toHalfWidth(input: string): string {
+    // Convert full-width to half-width for consistency
+    return input.replace(/[\uFF01-\uFF5E]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xFEE0))
+                .replace(/\u3000/g, ' ');
+  }
+
+  private normalizeChinese(input: string): string {
+    const s = this.toHalfWidth((input || '').toLowerCase());
+    // Remove whitespace and punctuation, keep CJK chars and basic ASCII letters/numbers
+    return s.replace(/[\s`~!@#$%^&*()\-_=+\[\]{};:'",.<>/?、，。？！￥…（）【】《》·：；——]/g, '')
+            .replace(/\p{Z}+/gu, '')
+            .trim();
+  }
+
+  private levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const dp = new Array(n + 1);
+    for (let j = 0; j <= n; j++) dp[j] = j;
+    for (let i = 1; i <= m; i++) {
+      let prev = i - 1;
+      dp[0] = i;
+      for (let j = 1; j <= n; j++) {
+        const tmp = dp[j];
+        const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+        dp[j] = Math.min(
+          dp[j] + 1,      // deletion
+          dp[j - 1] + 1,  // insertion
+          prev + cost     // substitution
+        );
+        prev = tmp;
+      }
+    }
+    return dp[n];
+  }
+
+  private lcsLen(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    if (m === 0 || n === 0) return 0;
+    const dp = Array.from({ length: m + 1 }, () => new Array<number>(n + 1).fill(0));
+    for (let i = 1; i <= m; i++) {
+      for (let j = 1; j <= n; j++) {
+        if (a[i - 1] === b[j - 1]) dp[i][j] = dp[i - 1][j - 1] + 1;
+        else dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+    return dp[m][n];
+  }
+
+  private similarity(a: string, b: string): number {
+    if (!a.length || !b.length) return 0;
+    const lev = this.levenshtein(a, b);
+    const lcs = this.lcsLen(a, b);
+    const maxLen = Math.max(a.length, b.length);
+    const levScore = 1 - lev / maxLen; // 0..1
+    const lcsScore = lcs / maxLen;     // 0..1
+    // Blend for robustness
+    return Math.max(0, Math.min(1, 0.6 * levScore + 0.4 * lcsScore));
+  }
+
+  private scoreCandidate(candidate: string, phraseNorm: string): number {
+    if (!candidate || !phraseNorm) return 0;
+    // Sliding window around phrase length ±2 to catch minor insertions/deletions
+    const targetLen = phraseNorm.length;
+    const minLen = Math.max(1, targetLen - 2);
+    const maxLen = targetLen + 2;
+    let best = 0;
+    for (let win = minLen; win <= maxLen; win++) {
+      for (let i = 0; i + win <= candidate.length; i++) {
+        const sub = candidate.slice(i, i + win);
+        const s = this.similarity(sub, phraseNorm);
+        if (s > best) best = s;
+        if (best >= 0.999) return best;
+      }
+    }
+    return best;
   }
 }

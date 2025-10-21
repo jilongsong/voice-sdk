@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>web-voice-kit Demo (iFlytek)</title>
+  <!-- Dependencies are now bundled directly in the SDK -->
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 24px; color: #222; }
+    .row { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+    label { font-size: 14px; color: #555; }
+    input[type="text"], input[type="password"] { padding: 8px; width: 320px; }
+    button { padding: 8px 14px; border: 1px solid #ccc; background: #fff; cursor: pointer; border-radius: 6px; }
+    button:hover { background: #f5f5f5; }
+    .muted { color: #777; font-size: 12px; }
+    .log { width: 100%; min-height: 200px; padding: 10px; border: 1px solid #e3e3e3; border-radius: 6px; background: #fafafa; white-space: pre-wrap; }
+    .pill { padding: 2px 8px; border-radius: 999px; background: #f0f0f0; font-size: 12px; }
+    .ok { background: #e6ffed; border: 1px solid #b7eb8f; }
+    .warn { background: #fff7e6; border: 1px solid #ffe58f; }
+    .err { background: #fff2f0; border: 1px solid #ffccc7; }
+  </style>
+</head>
+<body>
+  <h1>web-voice-kit Demo</h1>
+  <p class="muted">演示：Vosk 持续唤醒 + 讯飞实时转写。页面加载后会尝试自动启动，如果失败请点击 "Start" 按钮。建议使用 Chrome 或 Edge，并在 <code>localhost</code> 或 HTTPS 域名下测试麦克风权限。</p>
+  <p class="muted"><strong>使用说明：</strong>首次使用时浏览器会请求麦克风权限，请点击"允许"。如果自动启动失败，通常是由于浏览器安全策略，点击 "Start" 按钮即可正常启动。</p>
+
+  <div class="row">
+    <button id="btnStart">Start</button>
+    <button id="btnStop">Stop</button>
+    <button id="btnClear">Clear Log</button>
+    <span id="status" class="pill">idle</span>
+  </div>
+
+  <div class="row" style="align-items: flex-start;">
+    <div style="flex:1; min-width: 320px;">
+      <h3>Transcript</h3>
+      <div id="transcript" class="log"></div>
+    </div>
+    <div style="flex:1; min-width: 320px;">
+      <h3>Logs</h3>
+      <div id="logs" class="log"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { VoiceSDK } from './dist/voice-sdk.es.js';
+
+    const el = (id) => document.getElementById(id);
+    // 固定凭证（仅用于示例，请勿在生产页面暴露）
+    const APPID = 'aaba2df6';
+    const API_KEY = '7558247da85205738c299ae5bb0acc5d';
+    const WAKE_WORD = '你好';
+
+    const $btnStart = el('btnStart');
+    const $btnStop = el('btnStop');
+    const $btnClear = el('btnClear');
+    const $logs = el('logs');
+    const $trans = el('transcript');
+    const $status = el('status');
+
+    let sdk = null;
+
+    const log = (msg, type = '') => {
+      const time = new Date().toLocaleTimeString();
+      $logs.textContent += `[${time}] ${msg}\n`;
+      $logs.scrollTop = $logs.scrollHeight;
+      if (type === 'ok') $status.className = 'pill ok';
+      else if (type === 'warn') $status.className = 'pill warn';
+      else if (type === 'err') $status.className = 'pill err';
+    };
+
+    const setStatus = (s) => {
+      $status.textContent = s;
+    };
+
+    $btnClear.addEventListener('click', () => {
+      $logs.textContent = '';
+      $trans.textContent = '';
+      setStatus('idle');
+      $status.className = 'pill';
+    });
+
+    // 启动 SDK
+    const startSDK = async () => {
+      try {
+        if (sdk) {
+          try { await sdk.stop(); } catch {}
+          sdk = null;
+        }
+        $trans.textContent = '';
+
+        log('正在初始化 VoiceSDK...', 'ok');
+        setStatus('initializing');
+
+        sdk = new VoiceSDK({
+          xunfei: { appId: APPID, apiKey: API_KEY },
+          wakeWord: WAKE_WORD,
+          voskModelPath: './vosk-model-small-cn-0.22.zip',
+          requireWakeBeforeTranscribe: true,
+          emitBeforeWake: false,
+          interimResults: true,
+          locale: 'zh-CN',
+          endTimeoutMs: 1200,
+          // 可选：指定模型路径，留空使用默认路径
+          // voskModelPath: './custom-model.zip'
+        }, {
+          onTranscript: (text, isFinal) => {
+            $trans.textContent = text + (isFinal ? ' [final]' : '');
+            if (isFinal) {
+              log(`转写结果: ${text}`, 'ok');
+            }
+          },
+          onError: (e) => {
+            log('Error: ' + (e?.message || e), 'err');
+            setStatus('error');
+            
+            // 提供用户友好的错误提示
+            if (e?.message?.includes('permission') || e?.message?.includes('microphone')) {
+              log('请允许麦克风访问权限后重试', 'warn');
+            } else if (e?.message?.includes('model')) {
+              log('语音模型加载失败，请检查网络连接', 'warn');
+            } else if (e?.message?.includes('audio context') || e?.message?.includes('autoplay')) {
+              log('音频上下文启动失败，请点击按钮重试', 'warn');
+            }
+          },
+          onWake: () => {
+            log(`唤醒词 "${WAKE_WORD}" 检测到！开始语音转写...`, 'ok');
+            setStatus('woke');
+          }
+        });
+
+        log('正在启动语音监听...', 'ok');
+        await sdk.start();
+        
+        // 验证麦克风权限状态
+        if (sdk.isMicrophonePermissionGranted()) {
+          setStatus('listening');
+          log(`SDK 启动成功！正在监听唤醒词 "${WAKE_WORD}"...`, 'ok');
+        } else {
+          setStatus('权限待授予');
+          log('SDK 已初始化，但需要麦克风权限。请允许麦克风访问。', 'warn');
+        }
+      } catch (e) {
+        console.error('SDK startup error:', e);
+        log('启动失败: ' + (e?.message || e), 'err');
+        setStatus('error');
+        
+        // 提供更详细的错误信息和解决方案
+        if (e?.message?.includes('permission') || e?.message?.includes('microphone')) {
+          log('解决方案：请在浏览器地址栏左侧点击麦克风图标，选择"允许"', 'warn');
+        } else if (e?.message?.includes('model')) {
+          log('解决方案：请检查网络连接，确保可以访问语音模型文件', 'warn');
+        } else if (e?.message?.includes('audio context') || e?.message?.includes('autoplay')) {
+          log('解决方案：这是浏览器安全策略限制，请点击按钮手动启动', 'warn');
+        } else {
+          log('请尝试刷新页面或检查浏览器控制台获取更多信息', 'warn');
+        }
+        
+        throw e; // Re-throw to be handled by caller
+      }
+    };
+
+    $btnStart.addEventListener('click', async () => {
+      try {
+        await startSDK();
+      } catch (error) {
+        // Error already logged in startSDK, just ensure UI is in correct state
+        console.error('Manual start failed:', error);
+      }
+    });
+
+    $btnStop.addEventListener('click', async () => {
+      try {
+        if (!sdk) return;
+        await sdk.stop();
+        setStatus('stopped');
+        log('SDK stopped.');
+      } catch (e) {
+        log('Stop failed: ' + (e?.message || e), 'err');
+      }
+    });
+
+    // ============ Auto-start with user-gesture fallback ============
+    const attachGestureBootstrap = () => {
+      const once = async () => {
+        window.removeEventListener('click', once, true);
+        window.removeEventListener('touchstart', once, true);
+        window.removeEventListener('keydown', once, true);
+        log('检测到用户手势，尝试恢复音频并启动 SDK...', 'warn');
+        try {
+          await startSDK();
+        } catch (e) {
+          // 已在 startSDK 中处理错误
+        }
+      };
+      window.addEventListener('click', once, true);
+      window.addEventListener('touchstart', once, true);
+      window.addEventListener('keydown', once, true);
+    };
+
+    const autoStart = async () => {
+      // 延时启动，避免与页面首次渲染竞争
+      await new Promise(r => setTimeout(r, 300));
+      try {
+        await startSDK();
+      } catch (e) {
+        // 大概率是浏览器自动播放/音频策略导致的失败，挂载一次性手势引导
+        log('自动启动失败，等待用户手势以恢复音频策略...', 'warn');
+        attachGestureBootstrap();
+      }
+    };
+
+    // 当页面重新可见时进行一次轻量重试（若尚未进入 listening）
+    document.addEventListener('visibilitychange', async () => {
+      if (document.visibilityState === 'visible') {
+        const isListening = $status.textContent === 'listening' || $status.textContent === 'woke';
+        if (!isListening) {
+          try {
+            log('页面重新可见，尝试恢复语音监听...', 'warn');
+            await startSDK();
+          } catch (e) {
+            attachGestureBootstrap();
+          }
+        }
+      }
+    });
+
+    // 页面加载后尝试自动启动；若受策略限制，将在首次用户手势时自动恢复
+    autoStart();
+  </script>
+</body>
+</html>
