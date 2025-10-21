@@ -43,6 +43,7 @@ export class VoiceSDK {
   private noSpeechTimer: number | null = null; // 唤醒后无语音超时定时器
   private currentWakeStatus: WakeStatus = 'listening';
   private currentTranscriptionStatus: TranscriptionStatus = 'idle';
+  private wakeNotified = false; // 防重复触发 onWake
 
   constructor(options: VoiceSDKOptions, events: VoiceSDKEvents = {}) {
     // Defaults with optimized timeouts for better UX
@@ -89,8 +90,9 @@ export class VoiceSDK {
 
       // Wire onWake to start ASR when required
     this.wakeDetector.onWake(() => {
-      if (this.woke) return;
+      if (this.woke || this.wakeNotified) return;
       this.woke = true;
+      this.wakeNotified = true;
       this.continuousStartTime = Date.now();
       this.lastSpeechActivity = Date.now();
       this.hasSpeechActivity = false;
@@ -276,6 +278,7 @@ export class VoiceSDK {
     
     // Reset all state for next wake cycle
     this.woke = false;
+    this.wakeNotified = false;
     this.continuousStartTime = 0;
     this.lastSpeechActivity = 0;
     this.hasSpeechActivity = false;

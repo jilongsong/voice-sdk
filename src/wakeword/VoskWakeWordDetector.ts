@@ -34,9 +34,13 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private consecutiveHits: number = 0;
   private lastTriggerTs = 0;
   private readonly refractoryMs = 1500; // avoid re-triggering too frequently
-  private readonly partialThreshold = 0.78;
-  private readonly finalThreshold = 0.85;
+  private readonly partialThreshold = 0.72;
+  private readonly finalThreshold = 0.82;
   private readonly requiredConsecutivePartialHits = 2;
+  private nearMissHits: number = 0;
+  private readonly nearMissSlack = 0.04; // allow small margin below threshold
+  private readonly requiredNearMissHits = 3;
+  private lastMaxAbs: number = 0; // recent max amplitude snapshot from audio path
 
   // Health monitor
   private healthTimer?: number;
@@ -65,6 +69,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.triggered = false;
     this.consecutiveHits = 0;
     this.partialBuffer = '';
+    this.nearMissHits = 0;
+    this.lastMaxAbs = 0;
   }
 
   setWakeWords(phrases: string[]): void {
@@ -74,12 +80,14 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.triggered = false;
     this.consecutiveHits = 0;
     this.partialBuffer = '';
+    this.nearMissHits = 0;
   }
 
   reset(): void {
     this.triggered = false;
     this.consecutiveHits = 0;
     this.partialBuffer = '';
+    this.nearMissHits = 0;
   }
 
   inspect(_transcriptChunk: string, _isFinal: boolean): boolean {
@@ -184,7 +192,12 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       if (score > maxScore) maxScore = score;
     }
 
-    const threshold = isFinal ? this.finalThreshold : this.partialThreshold;
+    // Dynamic threshold adaptation based on recent loudness
+    // Louder speech usually yields more stable ASR; allow a modest relaxation
+    const baseThreshold = isFinal ? this.finalThreshold : this.partialThreshold;
+    const loud = Math.min(1, Math.max(0, this.lastMaxAbs));
+    const adapt = (loud >= 0.2 ? 0.02 : 0) + (loud >= 0.35 ? 0.02 : 0); // up to -0.04
+    const threshold = Math.max(0.6, baseThreshold - adapt);
 
     if (maxScore >= threshold) {
       if (isFinal) {
@@ -200,8 +213,21 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         this.lastTriggerTs = now;
         this.onWakeCb?.();
       }
+      // reset near-miss when actual hit occurs
+      this.nearMissHits = 0;
     } else if (!isFinal) {
-      // decay when not meeting threshold on partials
+      // near-miss support: if very close to threshold across multiple frames, still trigger
+      if (maxScore >= Math.max(0, threshold - this.nearMissSlack)) {
+        this.nearMissHits += 1;
+        if (this.nearMissHits >= this.requiredNearMissHits) {
+          this.triggered = true;
+          this.lastTriggerTs = now;
+          this.onWakeCb?.();
+        }
+      } else {
+        this.nearMissHits = Math.max(0, this.nearMissHits - 1);
+      }
+      // decay stability counter when not meeting threshold on partials
       this.consecutiveHits = Math.max(0, this.consecutiveHits - 1);
     }
   }
@@ -289,6 +315,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
           if (a > maxAbs) maxAbs = a;
         }
 
+        // Update recent loudness snapshot
+        this.lastMaxAbs = maxAbs;
         // Skip feeding if too quiet to reduce CPU + internal logs
         if (maxAbs <= 0.01) return;
 
@@ -395,6 +423,14 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         const msg = event.data;
         if (!msg || msg.type !== 'audioData') return;
         const data: Float32Array = msg.data as Float32Array; // already 16kHz
+        // Update recent loudness snapshot based on this chunk
+        let maxAbs = 0;
+        for (let i = 0; i < data.length; i++) {
+          const v = data[i];
+          const a = v < 0 ? -v : v;
+          if (a > maxAbs) maxAbs = a;
+        }
+        this.lastMaxAbs = maxAbs;
         if (!this.accumBuffer) {
           this.accumBuffer = new Float32Array(this.accumChunkSize);
           this.accumIndex = 0;
@@ -571,7 +607,9 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private normalizeChinese(input: string): string {
     const s = this.toHalfWidth((input || '').toLowerCase());
     // Remove whitespace and punctuation, keep CJK chars and basic ASCII letters/numbers
+    // Also strip common filler particles that ASR often inserts: 啊 呀 呢 吧 嘛 的 了 地 得 哦 喔 啊哈 哈 哎 哟 哇
     return s.replace(/[\s`~!@#$%^&*()\-_=+\[\]{};:'",.<>/?、，。？！￥…（）【】《》·：；——]/g, '')
+            .replace(/[啊呀呢吧嘛的了地得哦喔哈哎哟哇]/g, '')
             .replace(/\p{Z}+/gu, '')
             .trim();
   }
@@ -619,16 +657,18 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     const maxLen = Math.max(a.length, b.length);
     const levScore = 1 - lev / maxLen; // 0..1
     const lcsScore = lcs / maxLen;     // 0..1
-    // Blend for robustness
-    return Math.max(0, Math.min(1, 0.6 * levScore + 0.4 * lcsScore));
+    // Add bigram Jaccard similarity for Chinese robustness
+    const ngramScore = this.jaccardBigrams(a, b);
+    // Blend for robustness: emphasize edit distance, keep subsequence and n-gram overlap
+    return Math.max(0, Math.min(1, 0.5 * levScore + 0.3 * lcsScore + 0.2 * ngramScore));
   }
 
   private scoreCandidate(candidate: string, phraseNorm: string): number {
     if (!candidate || !phraseNorm) return 0;
     // Sliding window around phrase length ±2 to catch minor insertions/deletions
     const targetLen = phraseNorm.length;
-    const minLen = Math.max(1, targetLen - 2);
-    const maxLen = targetLen + 2;
+    const minLen = Math.max(1, targetLen - 3);
+    const maxLen = targetLen + 3;
     let best = 0;
     for (let win = minLen; win <= maxLen; win++) {
       for (let i = 0; i + win <= candidate.length; i++) {
@@ -639,5 +679,17 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       }
     }
     return best;
+  }
+
+  private jaccardBigrams(a: string, b: string): number {
+    const setA = new Set<string>();
+    const setB = new Set<string>();
+    for (let i = 0; i < a.length - 1; i++) setA.add(a.slice(i, i + 2));
+    for (let i = 0; i < b.length - 1; i++) setB.add(b.slice(i, i + 2));
+    if (setA.size === 0 || setB.size === 0) return 0;
+    let inter = 0;
+    for (const g of setA) if (setB.has(g)) inter++;
+    const union = setA.size + setB.size - inter;
+    return union > 0 ? inter / union : 0;
   }
 }
