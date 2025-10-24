@@ -1,6 +1,6 @@
 {
   "name": "web-voice-kit",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "A lightweight browser voice SDK: Vosk wake word + iFlytek (Xunfei) real-time transcription.",
   "type": "module",
   "main": "dist/voice-sdk.cjs.js",
@@ -44,6 +44,7 @@
   "sideEffects": false,
   "dependencies": {
     "crypto-js": "^4.2.0",
+    "pinyin-pro": "^3.16.0",
     "vosk-browser": "^0.0.5"
   },
   "devDependencies": {

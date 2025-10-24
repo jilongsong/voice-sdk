@@ -1,5 +1,6 @@
 import { WakeWordDetector } from './WakeWordDetector';
 import { createModel } from 'vosk-browser';
+import { pinyin } from 'pinyin-pro';
 
 export interface VoskWakeWordOptions {
   modelPath?: string;
@@ -13,6 +14,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private phrases: string[] = [];
   // Store normalized phrases for scoring
   private phrasesNorm: string[] = [];
+  private phrasesPinyin: string[] = [];
   private triggered = false;
   private permissionGranted = false;
 
@@ -41,6 +43,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private readonly nearMissSlack = 0.04; // allow small margin below threshold
   private readonly requiredNearMissHits = 3;
   private lastMaxAbs: number = 0; // recent max amplitude snapshot from audio path
+  private pinyinCache = new Map<string, string>();
 
   // Health monitor
   private healthTimer?: number;
@@ -66,6 +69,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     const raw = (phrase || '').trim();
     this.phrases = [raw.toLowerCase()];
     this.phrasesNorm = [this.normalizeChinese(raw)];
+    this.phrasesPinyin = [this.computePinyinNormalized(raw)];
+    this.pinyinCache.clear();
     this.triggered = false;
     this.consecutiveHits = 0;
     this.partialBuffer = '';
@@ -77,10 +82,13 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     const cleaned = phrases.map(p => (p || '').trim()).filter(p => p.length > 0);
     this.phrases = cleaned.map(p => p.toLowerCase());
     this.phrasesNorm = cleaned.map(p => this.normalizeChinese(p));
+    this.phrasesPinyin = cleaned.map(p => this.computePinyinNormalized(p));
+    this.pinyinCache.clear();
     this.triggered = false;
     this.consecutiveHits = 0;
     this.partialBuffer = '';
     this.nearMissHits = 0;
+    this.lastMaxAbs = 0;
   }
 
   reset(): void {
@@ -88,6 +96,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.consecutiveHits = 0;
     this.partialBuffer = '';
     this.nearMissHits = 0;
+    this.pinyinCache.clear();
   }
 
   inspect(_transcriptChunk: string, _isFinal: boolean): boolean {
@@ -187,8 +196,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     if (!candidate) return;
 
     let maxScore = 0;
-    for (const phraseNorm of this.phrasesNorm) {
-      const score = this.scoreCandidate(candidate, phraseNorm);
+    for (let i = 0; i < this.phrasesNorm.length; i++) {
+      const score = this.scoreCandidate(candidate, this.phrasesNorm[i], this.phrasesPinyin[i]);
       if (score > maxScore) maxScore = score;
     }
 
@@ -663,7 +672,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     return Math.max(0, Math.min(1, 0.5 * levScore + 0.3 * lcsScore + 0.2 * ngramScore));
   }
 
-  private scoreCandidate(candidate: string, phraseNorm: string): number {
+  private scoreCandidate(candidate: string, phraseNorm: string, phrasePinyin?: string): number {
     if (!candidate || !phraseNorm) return 0;
     // Sliding window around phrase length ±2 to catch minor insertions/deletions
     const targetLen = phraseNorm.length;
@@ -674,7 +683,20 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       for (let i = 0; i + win <= candidate.length; i++) {
         const sub = candidate.slice(i, i + win);
         const s = this.similarity(sub, phraseNorm);
-        if (s > best) best = s;
+        let combined = s;
+        if (phrasePinyin && phrasePinyin.length > 0) {
+          const subPinyin = this.getPinyinCached(sub);
+          if (subPinyin.length > 0) {
+            const pyScore = this.similarity(subPinyin, phrasePinyin);
+            if (pyScore >= 0.9) {
+              combined = Math.max(combined, pyScore * 0.9 + s * 0.1);
+            } else if (pyScore >= 0.75) {
+              const blended = s * 0.55 + pyScore * 0.45;
+              combined = Math.max(combined, blended);
+            }
+          }
+        }
+        if (combined > best) best = combined;
         if (best >= 0.999) return best;
       }
     }
@@ -691,5 +713,37 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     for (const g of setA) if (setB.has(g)) inter++;
     const union = setA.size + setB.size - inter;
     return union > 0 ? inter / union : 0;
+  }
+
+  private computePinyinNormalized(input: string): string {
+    if (!input) return '';
+    const normalized = this.normalizeChinese(input);
+    if (!normalized) return '';
+    if (!/[\u4e00-\u9fff]/.test(normalized)) {
+      return normalized;
+    }
+    try {
+      return pinyin(normalized, { toneType: 'none', type: 'string' })
+        .replace(/\s+/g, '')
+        .replace(/[^a-z0-9]/gi, '')
+        .toLowerCase();
+    } catch (error) {
+      console.warn('[VoskWakeWordDetector] Failed to convert to pinyin:', error);
+      return normalized;
+    }
+  }
+
+  private getPinyinCached(input: string): string {
+    if (!input) return '';
+    const cached = this.pinyinCache.get(input);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const computed = this.computePinyinNormalized(input);
+    if (this.pinyinCache.size >= 512) {
+      this.pinyinCache.clear();
+    }
+    this.pinyinCache.set(input, computed);
+    return computed;
   }
 }
