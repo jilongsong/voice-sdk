@@ -57,22 +57,21 @@ export class IatTranscriber implements SpeechTranscriber {
   }
 
   private getWebSocketUrl(): string {
-    // const ts = Math.floor(Date.now() / 1000);
-    // const signa = md5(this.opts.appId + ts).toString();
-    // const signatureSha = CryptoJS.HmacSHA1(signa, this.opts.apiKey);
-    // const signature = CryptoJS.enc.Base64.stringify(signatureSha);
+    const ts = Math.floor(Date.now() / 1000);
+    const signa = md5(this.opts.appId + ts).toString();
+    const signatureSha = CryptoJS.HmacSHA1(signa, this.opts.apiKey);
+    const signature = CryptoJS.enc.Base64.stringify(signatureSha);
 
-    // const params = new URLSearchParams();
-    // params.set('appid', this.opts.appId);
-    // params.set('ts', String(ts));
-    // params.set('signa', signature);
-    // // Optional params
-    // if (this.opts.lang) params.set('lang', this.opts.lang);
-    // if (this.opts.transType) params.set('transType', this.opts.transType);
-    // if (typeof this.opts.transStrategy !== 'undefined') params.set('transStrategy', String(this.opts.transStrategy));
+    const params = new URLSearchParams();
+    params.set('appid', this.opts.appId);
+    params.set('ts', String(ts));
+    params.set('signa', signature);
+    // Optional params
+    if (this.opts.lang) params.set('lang', this.opts.lang);
+    if (this.opts.transType) params.set('transType', this.opts.transType);
+    if (typeof this.opts.transStrategy !== 'undefined') params.set('transStrategy', String(this.opts.transStrategy));
 
-    // return `wss://rtasr.xfyun.cn/v1/ws?${params.toString()}`;
-    return this.opts.websocketUrl;
+    return `${this.opts.websocketUrl}?${params.toString()}`;
   }
 
   private emitPartial(text: string) {
