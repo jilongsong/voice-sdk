@@ -16,7 +16,7 @@ export type VoiceSDKEvents = {
 export type VoiceSDKOptions = SpeechTranscriberOptions & {
   wakeWord: string | string[];
   voskModelPath?: string; // Vosk模型路径
-  xunfei: Pick<IatTranscriberOptions, 'appId' | 'apiKey' | 'sampleRate' | 'frameSize' | 'vadThreshold'>;
+  xunfei: Pick<IatTranscriberOptions, 'appId' | 'apiKey' | 'sampleRate' | 'frameSize' | 'vadThreshold' | 'websocketUrl'>;
   autoStart?: boolean;
   emitBeforeWake?: boolean;
   requireWakeBeforeTranscribe?: boolean;
@@ -71,6 +71,7 @@ export class VoiceSDK {
     const xfOpts: IatTranscriberOptions = {
       appId: options.xunfei.appId,
       apiKey: options.xunfei.apiKey,
+      websocketUrl:options.xunfei.websocketUrl,
       sampleRate: options.xunfei.sampleRate ?? 16000,
       frameSize: options.xunfei.frameSize ?? 1280,
       vadThreshold: options.xunfei.vadThreshold ?? 0.002, // 降低VAD阈值，更敏感
