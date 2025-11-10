@@ -1,6 +1,5 @@
-import { WakeWordDetectorStandalone } from './standalone/WakeWordDetectorStandalone';
+import { WakeWordDetectorStandalone, WakeWordDetectorStandaloneOptions } from './standalone/WakeWordDetectorStandalone';
 import { SpeechTranscriberStandalone, SpeechTranscriberStandaloneOptions, TranscriberStatus } from './standalone/SpeechTranscriberStandalone';
-import type { VoskWakeWordOptions } from './wakeword/VoskWakeWordDetector';
 import type { TranscriptionResult } from './adapters/SpeechTranscriber';
 
 export type WakeStatus = 'listening' | 'woke' | 'idle';
@@ -20,6 +19,11 @@ export type VoiceSDKIntegratedOptions = {
    */
   wakeWord: string | string[];
   voskModelPath?: string;
+  
+  /**
+   * 唤醒词检测器配置（可选）
+   */
+  wakeDetectorOptions?: Omit<WakeWordDetectorStandaloneOptions, 'modelPath'>;
   
   /**
    * 讯飞转写配置
@@ -57,11 +61,16 @@ export class VoiceSDKIntegrated {
     };
     this.events = events;
 
-    // 创建唤醒词检测器
+    // 创建唤醒词检测器（默认启用自动重置）
     this.wakeDetector = new WakeWordDetectorStandalone({
       modelPath: options.voskModelPath,
       sampleRate: 16000,
-      usePartial: true
+      usePartial: true,
+      autoReset: {
+        enabled: true,
+        resetDelayMs: 2000
+      },
+      ...options.wakeDetectorOptions
     });
 
     // 设置唤醒词

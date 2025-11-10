@@ -1,5 +1,6 @@
 // ============ 独立组件（推荐使用）============
 export { WakeWordDetectorStandalone } from './standalone/WakeWordDetectorStandalone';
+export type { WakeWordDetectorStandaloneOptions } from './standalone/WakeWordDetectorStandalone';
 export { SpeechTranscriberStandalone } from './standalone/SpeechTranscriberStandalone';
 export type { SpeechTranscriberStandaloneOptions, TranscriberStatus } from './standalone/SpeechTranscriberStandalone';
 

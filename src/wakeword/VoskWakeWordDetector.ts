@@ -97,6 +97,9 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.partialBuffer = '';
     this.nearMissHits = 0;
     this.pinyinCache.clear();
+    // 重置最后触发时间，允许立即再次唤醒
+    this.lastTriggerTs = 0;
+    console.log('[VoskWakeWordDetector] Reset complete, ready for next wake');
   }
 
   inspect(_transcriptChunk: string, _isFinal: boolean): boolean {
@@ -170,15 +173,19 @@ export class VoskWakeWordDetector implements WakeWordDetector {
 
   private maybeWake(text: string, isFinal: boolean) {
     
-    if (!this.phrases.length || this.triggered) {
-      if (!this.phrases.length) console.log('[VoskWakeWordDetector] No wake words set');
-      if (this.triggered) console.log('[VoskWakeWordDetector] Already triggered, ignoring');
+    if (!this.phrases.length) {
+      console.log('[VoskWakeWordDetector] No wake words set');
+      return;
+    }
+    
+    if (this.triggered) {
+      // 已触发，但不打印过多日志（避免刷屏）
       return;
     }
     
     // Refractory to avoid repeated triggers
     const now = Date.now();
-    if (now - this.lastTriggerTs < this.refractoryMs) {
+    if (this.lastTriggerTs > 0 && now - this.lastTriggerTs < this.refractoryMs) {
       return;
     }
 

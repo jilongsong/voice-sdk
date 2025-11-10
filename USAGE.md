@@ -41,7 +41,12 @@ import { WakeWordDetectorStandalone } from 'web-voice-kit';
 const detector = new WakeWordDetectorStandalone({
   modelPath: '/path/to/vosk-model.zip',
   sampleRate: 16000,
-  usePartial: true
+  usePartial: true,
+  // 自动重置配置（默认启用，允许连续唤醒）
+  autoReset: {
+    enabled: true,        // 启用自动重置
+    resetDelayMs: 2000    // 唤醒后2秒自动重置
+  }
 });
 
 // 设置唤醒词
@@ -51,6 +56,7 @@ detector.setWakeWords(['小红', '小虹', '你好小红']);
 detector.onWake((wakeWord) => {
   console.log('检测到唤醒词:', wakeWord);
   // 在这里执行你的自定义逻辑
+  // 2秒后自动重置，可以再次唤醒
 });
 
 // 监听错误
@@ -115,9 +121,13 @@ await transcriber.start();
 ```typescript
 import { WakeWordDetectorStandalone, SpeechTranscriberStandalone } from 'web-voice-kit';
 
-// 创建唤醒词检测器
+// 创建唤醒词检测器（启用自动重置）
 const detector = new WakeWordDetectorStandalone({
-  modelPath: '/path/to/vosk-model.zip'
+  modelPath: '/path/to/vosk-model.zip',
+  autoReset: {
+    enabled: true,
+    resetDelayMs: 2000    // 唤醒后2秒自动重置
+  }
 });
 detector.setWakeWords(['小红', '小虹']);
 
@@ -139,10 +149,10 @@ detector.onWake(async (wakeWord) => {
   await transcriber.start();
 });
 
-// 转写自动停止后，重置唤醒检测器
+// 转写自动停止后的处理
 transcriber.onAutoStop((reason) => {
   console.log('转写结束，原因:', reason);
-  detector.reset(); // 重置以便下次唤醒
+  // 自动重置已在后台进行，无需手动调用 detector.reset()
 });
 
 // 启动唤醒检测
@@ -427,7 +437,17 @@ document.getElementById('stopBtn').addEventListener('click', async () => {
 
 #### 构造函数
 ```typescript
-new WakeWordDetectorStandalone(options: VoskWakeWordOptions)
+new WakeWordDetectorStandalone(options: WakeWordDetectorStandaloneOptions)
+
+interface WakeWordDetectorStandaloneOptions {
+  modelPath?: string;
+  sampleRate?: number;
+  usePartial?: boolean;
+  autoReset?: {
+    enabled: boolean;       // 是否启用自动重置（默认：true）
+    resetDelayMs?: number;  // 唤醒后多久自动重置（默认：2000ms）
+  };
+}
 ```
 
 #### 方法
@@ -435,13 +455,17 @@ new WakeWordDetectorStandalone(options: VoskWakeWordOptions)
 - `setWakeWords(phrases: string[]): void` - 设置多个唤醒词
 - `start(): Promise<void>` - 启动检测
 - `stop(): Promise<void>` - 停止检测
-- `reset(): void` - 重置状态
+- `reset(): void` - 手动重置状态（立即生效，清除自动重置定时器）
+- `updateAutoResetConfig(config): void` - 更新自动重置配置
 - `isActive(): boolean` - 是否运行中
 - `isMicrophonePermissionGranted(): boolean` - 麦克风权限状态
 
 #### 事件
 - `onWake(callback: (wakeWord: string) => void)` - 唤醒回调
 - `onError(callback: (error: Error) => void)` - 错误回调
+
+#### 自动重置功能
+默认启用自动重置，唤醒后自动恢复监听状态，允许连续唤醒。详见 [自动重置指南](./docs/AUTO_RESET_GUIDE.md)
 
 ### SpeechTranscriberStandalone
 

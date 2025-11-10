@@ -302,7 +302,7 @@
     // 配置
     const APPID = 'aaba2df6';
     const API_KEY = '7558247da85205738c299ae5bb0acc5d';
-    const WAKE_WORDS = ['小红', '小虹', '晓红', '你好小红'];
+    const WAKE_WORDS = ['你好', '小虹', '晓红', '你好小红'];
     const MODEL_PATH = './vosk-model-small-cn-0.22.zip';
 
     // 状态
@@ -366,7 +366,12 @@
       wakeDetector = new WakeWordDetectorStandalone({
         modelPath: MODEL_PATH,
         sampleRate: 16000,
-        usePartial: true
+        usePartial: true,
+        // 自动重置配置：唤醒后自动重置，允许连续唤醒
+        autoReset: {
+          enabled: true,
+          resetDelayMs: 2000  // 唤醒后2秒自动重置
+        }
       });
 
       wakeDetector.setWakeWords(WAKE_WORDS);
@@ -380,6 +385,11 @@
           setTimeout(() => {
             startTranscriber();
           }, 100);
+        } else if (currentMode === 'wake-only') {
+          // 仅唤醒模式：2秒后自动重置状态显示
+          setTimeout(() => {
+            updateWakeStatus('listening', '监听中');
+          }, 2000);
         }
       });
 
