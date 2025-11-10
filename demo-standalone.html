@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice SDK - 独立组件演示</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { 
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; 
+      margin: 0;
+      padding: 24px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      color: #333;
+    }
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+    h1 {
+      color: white;
+      text-align: center;
+      margin-bottom: 8px;
+      font-size: 2.5em;
+      text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
+    }
+    .subtitle {
+      color: rgba(255,255,255,0.9);
+      text-align: center;
+      margin-bottom: 32px;
+      font-size: 1.1em;
+    }
+    .card {
+      background: white;
+      border-radius: 12px;
+      padding: 24px;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .card h2 {
+      margin-top: 0;
+      color: #667eea;
+      font-size: 1.5em;
+      border-bottom: 2px solid #667eea;
+      padding-bottom: 8px;
+    }
+    .controls {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    button {
+      padding: 12px 24px;
+      border: none;
+      background: #667eea;
+      color: white;
+      cursor: pointer;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      transition: all 0.3s;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    button:hover {
+      background: #5568d3;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    }
+    button:active {
+      transform: translateY(0);
+    }
+    button:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+      transform: none;
+    }
+    button.danger {
+      background: #ef4444;
+    }
+    button.danger:hover {
+      background: #dc2626;
+    }
+    button.success {
+      background: #10b981;
+    }
+    button.success:hover {
+      background: #059669;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 6px 12px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-weight: 600;
+      margin-left: 8px;
+    }
+    .status-idle { background: #e5e7eb; color: #6b7280; }
+    .status-listening { background: #dbeafe; color: #1e40af; }
+    .status-woke { background: #fef3c7; color: #92400e; }
+    .status-active { background: #d1fae5; color: #065f46; }
+    .status-processing { background: #fecaca; color: #991b1b; }
+    .log-box {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      padding: 16px;
+      min-height: 200px;
+      max-height: 300px;
+      overflow-y: auto;
+      font-family: 'Courier New', monospace;
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .log-entry {
+      margin-bottom: 8px;
+      padding: 4px 8px;
+      border-radius: 4px;
+    }
+    .log-info { background: #dbeafe; color: #1e40af; }
+    .log-success { background: #d1fae5; color: #065f46; }
+    .log-warning { background: #fef3c7; color: #92400e; }
+    .log-error { background: #fecaca; color: #991b1b; }
+    .log-time {
+      color: #6b7280;
+      margin-right: 8px;
+    }
+    .transcript-box {
+      background: #f3f4f6;
+      border: 2px solid #667eea;
+      border-radius: 8px;
+      padding: 20px;
+      min-height: 100px;
+      font-size: 18px;
+      line-height: 1.6;
+      color: #1f2937;
+    }
+    .transcript-box.empty {
+      color: #9ca3af;
+      font-style: italic;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 24px;
+    }
+    @media (max-width: 768px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+    }
+    .mode-selector {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 16px;
+      padding: 12px;
+      background: #f9fafb;
+      border-radius: 8px;
+    }
+    .mode-option {
+      flex: 1;
+      padding: 12px;
+      border: 2px solid #e5e7eb;
+      border-radius: 8px;
+      cursor: pointer;
+      text-align: center;
+      transition: all 0.3s;
+    }
+    .mode-option:hover {
+      border-color: #667eea;
+    }
+    .mode-option.active {
+      border-color: #667eea;
+      background: #ede9fe;
+    }
+    .mode-option h3 {
+      margin: 0 0 4px 0;
+      font-size: 16px;
+      color: #667eea;
+    }
+    .mode-option p {
+      margin: 0;
+      font-size: 13px;
+      color: #6b7280;
+    }
+    .config-panel {
+      background: #f9fafb;
+      border-radius: 8px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+    .config-item {
+      margin-bottom: 12px;
+    }
+    .config-item label {
+      display: block;
+      margin-bottom: 4px;
+      font-weight: 600;
+      font-size: 13px;
+      color: #4b5563;
+    }
+    .config-item input[type="number"] {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #d1d5db;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .config-item input[type="checkbox"] {
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🎙️ Voice SDK 独立组件演示</h1>
+    <p class="subtitle">完全解耦的唤醒词检测 + 语音转写，自由控制交互逻辑</p>
+
+    <!-- 模式选择 -->
+    <div class="card">
+      <h2>选择使用模式</h2>
+      <div class="mode-selector">
+        <div class="mode-option active" data-mode="combined">
+          <h3>🔗 组合模式</h3>
+          <p>唤醒 + 转写联动</p>
+        </div>
+        <div class="mode-option" data-mode="wake-only">
+          <h3>👂 仅唤醒检测</h3>
+          <p>独立使用唤醒词</p>
+        </div>
+        <div class="mode-option" data-mode="transcribe-only">
+          <h3>✍️ 仅语音转写</h3>
+          <p>按钮触发转写</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- 自动停止配置 -->
+    <div class="card" id="autoStopConfig">
+      <h2>⚙️ 自动停止配置</h2>
+      <div class="config-panel">
+        <div class="config-item">
+          <label>
+            <input type="checkbox" id="autoStopEnabled" checked />
+            启用自动停止
+          </label>
+        </div>
+        <div class="config-item">
+          <label>静音超时 (毫秒)</label>
+          <input type="number" id="silenceTimeout" value="3000" min="1000" max="10000" step="500" />
+          <small style="color: #6b7280;">检测到语音后，静音多久自动停止</small>
+        </div>
+        <div class="config-item">
+          <label>无语音超时 (毫秒)</label>
+          <input type="number" id="noSpeechTimeout" value="5000" min="1000" max="15000" step="500" />
+          <small style="color: #6b7280;">启动后一直没有语音，多久自动停止</small>
+        </div>
+        <div class="config-item">
+          <label>最大时长 (毫秒)</label>
+          <input type="number" id="maxDuration" value="60000" min="10000" max="300000" step="5000" />
+          <small style="color: #6b7280;">无论什么情况，最长转写时长</small>
+        </div>
+      </div>
+    </div>
+
+    <!-- 控制面板 -->
+    <div class="card">
+      <h2>🎮 控制面板</h2>
+      <div class="controls">
+        <button id="btnStartWake" class="success">启动唤醒检测</button>
+        <button id="btnStopWake" class="danger" disabled>停止唤醒检测</button>
+        <button id="btnStartTranscribe" class="success" disabled>启动转写</button>
+        <button id="btnStopTranscribe" class="danger" disabled>停止转写</button>
+        <button id="btnReset">重置状态</button>
+        <button id="btnClearLogs">清空日志</button>
+      </div>
+      <div>
+        <strong>唤醒状态:</strong>
+        <span class="status-badge status-idle" id="wakeStatus">未启动</span>
+        <strong style="margin-left: 20px;">转写状态:</strong>
+        <span class="status-badge status-idle" id="transcribeStatus">未启动</span>
+      </div>
+    </div>
+
+    <!-- 转写结果 -->
+    <div class="card">
+      <h2>📝 转写结果</h2>
+      <div class="transcript-box empty" id="transcript">等待语音输入...</div>
+    </div>
+
+    <!-- 日志 -->
+    <div class="card">
+      <h2>📋 运行日志</h2>
+      <div class="log-box" id="logs"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import { WakeWordDetectorStandalone, SpeechTranscriberStandalone } from './dist/voice-sdk.es.js';
+
+    // 配置
+    const APPID = 'aaba2df6';
+    const API_KEY = '7558247da85205738c299ae5bb0acc5d';
+    const WAKE_WORDS = ['小红', '小虹', '晓红', '你好小红'];
+    const MODEL_PATH = './vosk-model-small-cn-0.22.zip';
+
+    // 状态
+    let currentMode = 'combined';
+    let wakeDetector = null;
+    let transcriber = null;
+
+    // DOM 元素
+    const $ = (id) => document.getElementById(id);
+    const $wakeStatus = $('wakeStatus');
+    const $transcribeStatus = $('transcribeStatus');
+    const $transcript = $('transcript');
+    const $logs = $('logs');
+
+    // 日志函数
+    function log(message, type = 'info') {
+      const time = new Date().toLocaleTimeString();
+      const entry = document.createElement('div');
+      entry.className = `log-entry log-${type}`;
+      entry.innerHTML = `<span class="log-time">[${time}]</span>${message}`;
+      $logs.appendChild(entry);
+      $logs.scrollTop = $logs.scrollHeight;
+    }
+
+    // 更新状态显示
+    function updateWakeStatus(status, text) {
+      $wakeStatus.className = `status-badge status-${status}`;
+      $wakeStatus.textContent = text;
+    }
+
+    function updateTranscribeStatus(status, text) {
+      $transcribeStatus.className = `status-badge status-${status}`;
+      $transcribeStatus.textContent = text;
+    }
+
+    // 更新按钮状态
+    function updateButtons() {
+      const wakeActive = wakeDetector?.isActive();
+      const transcribeActive = transcriber?.isActive();
+
+      $('btnStartWake').disabled = wakeActive || currentMode === 'transcribe-only';
+      $('btnStopWake').disabled = !wakeActive || currentMode === 'transcribe-only';
+      $('btnStartTranscribe').disabled = transcribeActive || currentMode === 'wake-only';
+      $('btnStopTranscribe').disabled = !transcribeActive || currentMode === 'wake-only';
+    }
+
+    // 获取自动停止配置
+    function getAutoStopConfig() {
+      return {
+        enabled: $('autoStopEnabled').checked,
+        silenceTimeoutMs: parseInt($('silenceTimeout').value),
+        noSpeechTimeoutMs: parseInt($('noSpeechTimeout').value),
+        maxDurationMs: parseInt($('maxDuration').value)
+      };
+    }
+
+    // 初始化唤醒检测器
+    function initWakeDetector() {
+      if (wakeDetector) return;
+
+      wakeDetector = new WakeWordDetectorStandalone({
+        modelPath: MODEL_PATH,
+        sampleRate: 16000,
+        usePartial: true
+      });
+
+      wakeDetector.setWakeWords(WAKE_WORDS);
+
+      wakeDetector.onWake((wakeWord) => {
+        log(`🎉 检测到唤醒词: ${wakeWord}`, 'success');
+        updateWakeStatus('woke', '已唤醒');
+
+        // 组合模式下自动启动转写
+        if (currentMode === 'combined') {
+          setTimeout(() => {
+            startTranscriber();
+          }, 100);
+        }
+      });
+
+      wakeDetector.onError((error) => {
+        log(`❌ 唤醒检测错误: ${error.message}`, 'error');
+      });
+    }
+
+    // 初始化转写器
+    function initTranscriber() {
+      if (transcriber) return;
+
+      transcriber = new SpeechTranscriberStandalone({
+        appId: APPID,
+        apiKey: API_KEY,
+        websocketUrl: 'wss://rtasr.xfyun.cn/v1/ws',
+        sampleRate: 16000,
+        autoStop: getAutoStopConfig()
+      });
+
+      transcriber.onResult((result) => {
+        $transcript.textContent = result.transcript;
+        $transcript.className = 'transcript-box';
+        
+        if (result.isFinal) {
+          log(`✅ 最终结果: ${result.transcript}`, 'success');
+        }
+      });
+
+      transcriber.onStatusChange((status) => {
+        const statusMap = {
+          idle: ['idle', '空闲'],
+          starting: ['active', '启动中'],
+          active: ['active', '活跃'],
+          processing: ['processing', '处理中'],
+          stopping: ['idle', '停止中']
+        };
+        const [className, text] = statusMap[status] || ['idle', status];
+        updateTranscribeStatus(className, text);
+        updateButtons();
+      });
+
+      transcriber.onAutoStop((reason) => {
+        const reasonMap = {
+          'silence': '静音超时',
+          'no-speech': '无语音超时',
+          'max-duration': '达到最大时长'
+        };
+        log(`⏹️ 自动停止: ${reasonMap[reason]}`, 'warning');
+        
+        // 组合模式下重置唤醒检测器
+        if (currentMode === 'combined' && wakeDetector) {
+          wakeDetector.reset();
+          updateWakeStatus('listening', '监听中');
+        }
+      });
+
+      transcriber.onError((error) => {
+        log(`❌ 转写错误: ${error.message}`, 'error');
+      });
+    }
+
+    // 启动唤醒检测
+    async function startWakeDetector() {
+      try {
+        initWakeDetector();
+        log('🚀 正在启动唤醒检测...', 'info');
+        await wakeDetector.start();
+        updateWakeStatus('listening', '监听中');
+        log('✅ 唤醒检测已启动', 'success');
+        updateButtons();
+      } catch (error) {
+        log(`❌ 启动失败: ${error.message}`, 'error');
+      }
+    }
+
+    // 停止唤醒检测
+    async function stopWakeDetector() {
+      try {
+        await wakeDetector.stop();
+        updateWakeStatus('idle', '未启动');
+        log('⏹️ 唤醒检测已停止', 'info');
+        updateButtons();
+      } catch (error) {
+        log(`❌ 停止失败: ${error.message}`, 'error');
+      }
+    }
+
+    // 启动转写
+    async function startTranscriber() {
+      try {
+        initTranscriber();
+        
+        // 更新配置
+        transcriber.updateAutoStopConfig(getAutoStopConfig());
+        
+        log('🚀 正在启动语音转写...', 'info');
+        $transcript.textContent = '正在监听...';
+        $transcript.className = 'transcript-box empty';
+        
+        await transcriber.start();
+        log('✅ 语音转写已启动', 'success');
+        updateButtons();
+      } catch (error) {
+        log(`❌ 启动失败: ${error.message}`, 'error');
+      }
+    }
+
+    // 停止转写
+    async function stopTranscriber() {
+      try {
+        await transcriber.stop();
+        log('⏹️ 语音转写已停止', 'info');
+        updateButtons();
+        
+        // 组合模式下重置唤醒检测器
+        if (currentMode === 'combined' && wakeDetector) {
+          wakeDetector.reset();
+          updateWakeStatus('listening', '监听中');
+        }
+      } catch (error) {
+        log(`❌ 停止失败: ${error.message}`, 'error');
+      }
+    }
+
+    // 模式切换
+    document.querySelectorAll('.mode-option').forEach(option => {
+      option.addEventListener('click', async () => {
+        const mode = option.dataset.mode;
+        if (mode === currentMode) return;
+
+        // 停止所有运行中的服务
+        if (transcriber?.isActive()) await stopTranscriber();
+        if (wakeDetector?.isActive()) await stopWakeDetector();
+
+        // 更新UI
+        document.querySelectorAll('.mode-option').forEach(o => o.classList.remove('active'));
+        option.classList.add('active');
+        currentMode = mode;
+
+        // 更新配置面板显示
+        $('autoStopConfig').style.display = mode === 'wake-only' ? 'none' : 'block';
+
+        log(`🔄 切换到模式: ${option.querySelector('h3').textContent}`, 'info');
+        updateButtons();
+
+        // 清空转写结果
+        $transcript.textContent = '等待语音输入...';
+        $transcript.className = 'transcript-box empty';
+      });
+    });
+
+    // 按钮事件
+    $('btnStartWake').addEventListener('click', startWakeDetector);
+    $('btnStopWake').addEventListener('click', stopWakeDetector);
+    $('btnStartTranscribe').addEventListener('click', startTranscriber);
+    $('btnStopTranscribe').addEventListener('click', stopTranscriber);
+
+    $('btnReset').addEventListener('click', () => {
+      wakeDetector?.reset();
+      $transcript.textContent = '等待语音输入...';
+      $transcript.className = 'transcript-box empty';
+      log('🔄 状态已重置', 'info');
+    });
+
+    $('btnClearLogs').addEventListener('click', () => {
+      $logs.innerHTML = '';
+    });
+
+    // 配置变化时更新转写器
+    ['autoStopEnabled', 'silenceTimeout', 'noSpeechTimeout', 'maxDuration'].forEach(id => {
+      $(id).addEventListener('change', () => {
+        if (transcriber && transcriber.isActive()) {
+          transcriber.updateAutoStopConfig(getAutoStopConfig());
+          log('⚙️ 自动停止配置已更新', 'info');
+        }
+      });
+    });
+
+    // 初始化日志
+    log('👋 欢迎使用 Voice SDK 独立组件演示', 'info');
+    log('💡 提示: 选择使用模式后，点击相应按钮开始体验', 'info');
+    updateButtons();
+  </script>
+</body>
+</html>

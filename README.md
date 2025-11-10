@@ -1,12 +1,26 @@
 # Voice SDK
 
-Lightweight browser voice SDK with a fixed pipeline: Vosk wake word detection + iFlytek (Xunfei) real-time speech transcription. Built with Vite and TypeScript.
+🎙️ **完全解耦的浏览器语音 SDK**：独立的唤醒词检测 + 语音转写，自由组合使用。
 
-Features:
-- Continuous wake listening using Vosk (browser-side, requires model asset)
-- Real-time transcription using iFlytek (Xunfei) WebSocket API
-- Automatic end-of-utterance by inactivity (configurable `endTimeoutMs`, default 1200ms)
-- ESM/CJS builds + TypeScript types
+## ✨ 新架构特性 (v0.3.0+)
+
+- 🔓 **完全解耦**：唤醒词检测和语音转写完全独立，可单独使用
+- 🎯 **灵活组合**：使用者自由决定如何组合和交互
+- ⏱️ **智能超时**：三种自动停止机制（静音/无语音/最大时长）
+- 🎨 **多种用法**：独立组件、集成版本、原有版本（向后兼容）
+- 📦 **TypeScript**：完整的类型定义
+- 🚀 **现代构建**：Vite + ESM/CJS 输出
+
+## 核心组件
+
+### 1. WakeWordDetectorStandalone
+独立的唤醒词检测器，基于 Vosk 本地模型。
+
+### 2. SpeechTranscriberStandalone  
+独立的语音转写器，基于讯飞实时转写 API，支持智能自动停止。
+
+### 3. VoiceSDKIntegrated
+可选的便捷集成层，自动协调唤醒和转写。
 
 ## Install
 
@@ -25,137 +39,194 @@ npm i
 npm run build
 ```
 
-## Usage
+## 快速开始
 
-Minimal example:
-```ts
-import { VoiceSDK } from 'web-voice-kit';
+### 方式一：独立组件（推荐）⭐
 
-const sdk = new VoiceSDK({
-  // Required: wake word phrase
-  wakeWord: '嘿，小智',
-  
-  // Required: Vosk model path - MUST be provided when using as npm package
-  voskModelPath: '/models/vosk-model-small-zh-cn-0.22.zip', // or a directory URL
+```typescript
+import { WakeWordDetectorStandalone, SpeechTranscriberStandalone } from 'web-voice-kit';
 
-  // Required: iFlytek credentials
-  xunfei: {
-    appId: 'YOUR_APP_ID',
-    apiKey: 'YOUR_API_KEY',
-    // optional:
-    // sampleRate: 16000,
-    // frameSize: 1280,
-    // vadThreshold: 0.005,
-  },
-
-  // Optional
-  interimResults: true,
-  locale: 'zh-CN',
-  // End-of-utterance when no transcript activity for N ms after wake
-  endTimeoutMs: 1200,
-  // Wake-gated transcription (default true): start ASR only after wake
-  requireWakeBeforeTranscribe: true,
-}, {
-  onWake: () => console.log('Woke!'),
-  onTranscript: (text, isFinal) => console.log('ASR:', text, isFinal),
-  onError: (e) => console.error('VoiceSDK error:', e),
-  onWakeStatusChange: (status) => console.log('Wake status:', status),
-  onTranscriptionStatusChange: (status) => console.log('Transcription status:', status),
+// 1. 创建唤醒词检测器
+const detector = new WakeWordDetectorStandalone({
+  modelPath: '/path/to/vosk-model.zip'
 });
+detector.setWakeWords(['小红', '小虹']);
 
-await sdk.start();
-// ... later
-await sdk.stop();
-```
-
-## Status Events
-
-The SDK provides two status tracking events to monitor the current state:
-
-### Wake Status
-- `listening` - SDK is actively listening for wake words
-- `woke` - Wake word detected, transcription session started
-- `timeout` - No speech detected after wake, returning to listening mode
-
-### Transcription Status  
-- `idle` - No active transcription session
-- `active` - Transcription session started, waiting for speech
-- `processing` - Actively processing speech input
-
-```ts
-const sdk = new VoiceSDK(options, {
-  onWakeStatusChange: (status) => {
-    switch(status) {
-      case 'listening':
-        console.log('Ready for wake word');
-        break;
-      case 'woke':
-        console.log('Wake word detected!');
-        break;
-      case 'timeout':
-        console.log('No speech detected, back to listening');
-        break;
-    }
-  },
-  onTranscriptionStatusChange: (status) => {
-    switch(status) {
-      case 'idle':
-        console.log('Transcription inactive');
-        break;
-      case 'active':
-        console.log('Ready for speech input');
-        break;
-      case 'processing':
-        console.log('Processing speech...');
-        break;
-    }
+// 2. 创建语音转写器（带智能自动停止）
+const transcriber = new SpeechTranscriberStandalone({
+  appId: 'YOUR_APP_ID',
+  apiKey: 'YOUR_API_KEY',
+  websocketUrl: 'wss://rtasr.xfyun.cn/v1/ws',
+  autoStop: {
+    enabled: true,
+    silenceTimeoutMs: 3000,      // 静音3秒后停止
+    noSpeechTimeoutMs: 5000,     // 5秒无语音停止
+    maxDurationMs: 60000         // 最长60秒
   }
 });
 
-// Get current status
-console.log('Wake status:', sdk.getWakeStatus());
-console.log('Transcription status:', sdk.getTranscriptionStatus());
+// 3. 自定义交互逻辑
+detector.onWake(async () => {
+  console.log('唤醒了！');
+  await transcriber.start();
+});
+
+transcriber.onResult((result) => {
+  console.log('转写:', result.transcript);
+});
+
+transcriber.onAutoStop((reason) => {
+  console.log('自动停止:', reason);
+  detector.reset();
+});
+
+// 4. 启动
+await detector.start();
 ```
 
-### Model Setup
+### 方式二：集成版本
 
-**IMPORTANT**: When using this SDK as an npm package, you **MUST** provide the `voskModelPath` option:
+```typescript
+import { VoiceSDKIntegrated } from 'web-voice-kit';
 
-```ts
-const sdk = new VoiceSDK({
-  wakeWord: '嘿，小智',
-  voskModelPath: '/path/to/vosk-model.zip', // Required!
-  xunfei: { /* ... */ }
+const sdk = new VoiceSDKIntegrated({
+  wakeWord: ['小红', '小虹'],
+  voskModelPath: '/path/to/vosk-model.zip',
+  xunfei: {
+    appId: 'YOUR_APP_ID',
+    apiKey: 'YOUR_API_KEY',
+    websocketUrl: 'wss://rtasr.xfyun.cn/v1/ws',
+    autoStop: {
+      enabled: true,
+      silenceTimeoutMs: 3000
+    }
+  },
+  autoStartTranscriberOnWake: true
+}, {
+  onWake: () => console.log('唤醒！'),
+  onTranscript: (text, isFinal) => console.log('转写:', text),
+  onAutoStop: (reason) => console.log('停止:', reason)
+});
+
+await sdk.start();
+```
+
+### 方式三：仅使用转写（无唤醒词）
+
+```typescript
+import { SpeechTranscriberStandalone } from 'web-voice-kit';
+
+const transcriber = new SpeechTranscriberStandalone({
+  appId: 'YOUR_APP_ID',
+  apiKey: 'YOUR_API_KEY',
+  websocketUrl: 'wss://rtasr.xfyun.cn/v1/ws',
+  autoStop: { enabled: true, silenceTimeoutMs: 2000 }
+});
+
+transcriber.onResult((result) => {
+  console.log(result.transcript);
+});
+
+// 按钮触发
+button.onclick = () => transcriber.start();
+```
+
+## 🎯 智能自动停止
+
+`SpeechTranscriberStandalone` 提供三种自动停止机制：
+
+### 1. 静音超时 (silenceTimeoutMs)
+检测到语音后，静音超过指定时间自动停止。
+- **适用场景**：用户说完话后自动结束
+- **推荐值**：2000-5000ms
+
+### 2. 无语音超时 (noSpeechTimeoutMs)  
+启动后一直没有语音活动，自动停止。
+- **适用场景**：防止误触发
+- **推荐值**：3000-8000ms
+
+### 3. 最大时长 (maxDurationMs)
+超过最大时长强制停止。
+- **适用场景**：防止长时间占用
+- **推荐值**：30000-120000ms
+
+```typescript
+autoStop: {
+  enabled: true,
+  silenceTimeoutMs: 3000,      // 静音3秒停止
+  noSpeechTimeoutMs: 5000,     // 5秒无语音停止  
+  maxDurationMs: 60000         // 最长60秒
+}
+```
+
+运行时可动态调整：
+```typescript
+transcriber.updateAutoStopConfig({
+  silenceTimeoutMs: 5000
 });
 ```
 
-**Model Options:**
-1. **Download a Vosk model** from [Vosk Models](https://alphacephei.com/vosk/models) 
-2. **Host the model file** on your web server or CDN
-3. **Set the correct path** - can be:
-   - A zip archive: `/models/vosk-model-small-zh-cn-0.22.zip`
-   - A directory URL: `/models/vosk-model-small-zh-cn-0.22/`
-   - A CDN URL: `https://cdn.example.com/vosk-model.zip`
+## 📚 详细文档
 
-**Common Issues:**
-- ❌ "Unrecognized archive format" - Model path is incorrect or file not accessible
-- ❌ CORS errors - Ensure proper CORS headers if loading from different domain
-- ❌ 404 errors - Model file not found at specified path
+完整的使用指南和 API 文档请查看：
+- [USAGE.md](./USAGE.md) - 详细使用指南
+- [demo-standalone.html](./demo-standalone.html) - 新架构演示
+- [demo.html](./demo.html) - 原有版本演示
 
-### Notes
-- The model must be accessible from the browser with proper CORS/HTTPS settings
-- `endTimeoutMs` controls how quickly an utterance ends after wake if the user stops speaking
-- The SDK uses a single mic source for wake and ASR; permissions are requested by the browser
+## 🔧 模型配置
 
-## Browser Support
+使用唤醒词检测时，需要提供 Vosk 模型：
 
-Tested primarily on Chromium-based browsers (Chrome/Edge). Ensure `navigator.mediaDevices.getUserMedia` and WebAudio are available. Vosk runs in-browser via `vosk-browser`.
+```typescript
+const detector = new WakeWordDetectorStandalone({
+  modelPath: '/path/to/vosk-model.zip'  // 必需！
+});
+```
 
-## Development
+**模型获取：**
+1. 从 [Vosk Models](https://alphacephei.com/vosk/models) 下载
+2. 托管到你的服务器或 CDN
+3. 确保浏览器可访问（注意 CORS）
 
-- `npm run dev` — Vite dev server for library playground (you can add an `index.html` demo if needed)
-- `npm run build` — Produces `dist/` with ES/CJS/UMD bundles and `dist/types/` for typings
+**推荐模型：**
+- 中文：`vosk-model-small-cn-0.22` (约 42MB)
+- 英文：`vosk-model-small-en-us-0.15` (约 40MB)
 
-## License
+## 🆚 架构对比
+
+| 特性 | 新架构（独立组件） | 旧架构 |
+|------|-------------------|--------|
+| 解耦程度 | ✅ 完全独立 | ❌ 强耦合 |
+| 灵活性 | ✅ 自由组合 | ❌ 固定流程 |
+| 自动停止 | ✅ 三种机制 | ⚠️ 简单超时 |
+| 状态管理 | ✅ 细粒度 | ⚠️ 粗粒度 |
+| 推荐度 | ⭐⭐⭐⭐⭐ | ⭐⭐⭐ |
+
+## 🌐 浏览器支持
+
+- ✅ Chrome/Edge (推荐)
+- ✅ Firefox
+- ⚠️ Safari (部分功能)
+- ❌ IE (不支持)
+
+需要支持：
+- `navigator.mediaDevices.getUserMedia`
+- Web Audio API
+- WebSocket
+
+## 🛠️ 开发
+
+```bash
+npm install          # 安装依赖
+npm run dev          # 开发服务器
+npm run build        # 构建生产版本
+npm run preview      # 预览构建结果
+```
+
+## 📄 License
 
 MIT
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request！
