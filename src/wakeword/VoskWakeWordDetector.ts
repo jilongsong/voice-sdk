@@ -6,6 +6,10 @@ export interface VoskWakeWordOptions {
   modelPath?: string;
   sampleRate?: number;
   usePartial?: boolean;
+  /** Highpass filter cutoff frequency in Hz (default: 85). Set to 0 to disable. */
+  highpassFrequency?: number;
+  /** Whether to use grammar constraint for better wake word detection (default: true) */
+  useGrammar?: boolean;
 }
 
 export class VoskWakeWordDetector implements WakeWordDetector {
@@ -21,6 +25,7 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   // Audio processing
   private audioContext?: AudioContext;
   private sourceNode?: MediaStreamAudioSourceNode;
+  private highpassFilter?: BiquadFilterNode; // Highpass filter to remove low-frequency noise
   private workletNode?: ScriptProcessorNode | AudioWorkletNode;
   private muteGain?: GainNode; // zero-gain node to keep graph alive without sound
   private stream?: MediaStream;
@@ -36,12 +41,13 @@ export class VoskWakeWordDetector implements WakeWordDetector {
   private consecutiveHits: number = 0;
   private lastTriggerTs = 0;
   private readonly refractoryMs = 1500; // avoid re-triggering too frequently
-  private readonly partialThreshold = 0.72;
-  private readonly finalThreshold = 0.82;
+  // Thresholds lowered since grammar constraint significantly reduces false positives
+  private readonly partialThreshold = 0.65; // was 0.72 - easier to trigger with grammar
+  private readonly finalThreshold = 0.75;   // was 0.82 - easier to trigger with grammar
   private readonly requiredConsecutivePartialHits = 2;
   private nearMissHits: number = 0;
-  private readonly nearMissSlack = 0.04; // allow small margin below threshold
-  private readonly requiredNearMissHits = 3;
+  private readonly nearMissSlack = 0.06; // was 0.04 - wider margin for near-miss detection
+  private readonly requiredNearMissHits = 2; // was 3 - faster near-miss triggering
   private lastMaxAbs: number = 0; // recent max amplitude snapshot from audio path
   private pinyinCache = new Map<string, string>();
 
@@ -60,7 +66,9 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.options = { 
       modelPath: opts.modelPath || '',
       sampleRate: 16000, 
-      usePartial: true, 
+      usePartial: true,
+      highpassFrequency: 85, // Default 85Hz highpass to filter low-freq noise
+      useGrammar: true, // Default to using grammar constraint
       ...opts 
     };
   }
@@ -76,6 +84,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.partialBuffer = '';
     this.nearMissHits = 0;
     this.lastMaxAbs = 0;
+    // Rebuild recognizer with new grammar if model is loaded
+    this.rebuildRecognizerWithGrammar();
   }
 
   setWakeWords(phrases: string[]): void {
@@ -89,6 +99,8 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     this.partialBuffer = '';
     this.nearMissHits = 0;
     this.lastMaxAbs = 0;
+    // Rebuild recognizer with new grammar if model is loaded
+    this.rebuildRecognizerWithGrammar();
   }
 
   reset(): void {
@@ -130,27 +142,116 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     }
     
     if (!this.recognizer) {
-      console.log('[VoskWakeWordDetector] Creating Vosk recognizer...');
-      this.recognizer = new this.model.KaldiRecognizer(this.options.sampleRate);
-      
-      // Wire events
-      this.recognizer.on('result', (msg: any) => {
-        const text: string = msg?.result?.text || '';
-        this.maybeWake(text, true);
-      });
-      
-      this.recognizer.on('partialresult', (msg: any) => {
-        if (!this.options.usePartial) return;
-        const text: string = msg?.partial || '';
-        this.maybeWake(text, false);
-      });
-      
-      this.recognizer.on('error', (err: any) => {
-        console.error('[VoskWakeWordDetector] Recognizer error:', err);
-      });
-      
-      console.log('[VoskWakeWordDetector] Recognizer created successfully');
+      this.createRecognizer();
     }
+  }
+
+  /**
+   * Build grammar JSON for the recognizer to constrain recognition to wake words.
+   * This significantly reduces false positives ("phantom" wake detections).
+   */
+  private buildGrammarJson(): string | null {
+    if (!this.options.useGrammar || this.phrases.length === 0) {
+      return null;
+    }
+    
+    // Build grammar list with wake words and their variations
+    const grammarWords: string[] = [];
+    
+    for (const phrase of this.phrases) {
+      // Add original phrase
+      grammarWords.push(phrase);
+      
+      // Add phrase without spaces
+      const noSpace = phrase.replace(/\s+/g, '');
+      if (noSpace !== phrase) grammarWords.push(noSpace);
+      
+      // For Chinese phrases, add character-by-character (helps with partial recognition)
+      if (/[\u4e00-\u9fff]/.test(phrase)) {
+        const chars = phrase.replace(/\s+/g, '').split('');
+        // Add individual characters for partial matching
+        chars.forEach(c => {
+          if (!grammarWords.includes(c)) grammarWords.push(c);
+        });
+        // Add 2-char combinations
+        for (let i = 0; i < chars.length - 1; i++) {
+          const bigram = chars[i] + chars[i + 1];
+          if (!grammarWords.includes(bigram)) grammarWords.push(bigram);
+        }
+      }
+    }
+    
+    // Add silence/noise tokens that Vosk might output
+    grammarWords.push('[unk]');
+    
+    const grammar = JSON.stringify(grammarWords);
+    console.log('[VoskWakeWordDetector] Grammar built:', grammar);
+    return grammar;
+  }
+
+  /**
+   * Create the Vosk recognizer, optionally with grammar constraint.
+   */
+  private createRecognizer(): void {
+    if (!this.model) return;
+    
+    console.log('[VoskWakeWordDetector] Creating Vosk recognizer...');
+    
+    const grammarJson = this.buildGrammarJson();
+    
+    if (grammarJson && this.options.useGrammar) {
+      // Create recognizer with grammar constraint - this is the key optimization!
+      // The grammar limits the vocabulary Vosk will consider, greatly reducing false positives
+      try {
+        this.recognizer = new this.model.KaldiRecognizer(this.options.sampleRate, grammarJson);
+        console.log('[VoskWakeWordDetector] Recognizer created WITH grammar constraint');
+      } catch (e) {
+        console.warn('[VoskWakeWordDetector] Failed to create recognizer with grammar, falling back to no grammar:', e);
+        this.recognizer = new this.model.KaldiRecognizer(this.options.sampleRate);
+        console.log('[VoskWakeWordDetector] Recognizer created without grammar (fallback)');
+      }
+    } else {
+      this.recognizer = new this.model.KaldiRecognizer(this.options.sampleRate);
+      console.log('[VoskWakeWordDetector] Recognizer created without grammar');
+    }
+    
+    // Wire events
+    this.recognizer.on('result', (msg: any) => {
+      const text: string = msg?.result?.text || '';
+      this.maybeWake(text, true);
+    });
+    
+    this.recognizer.on('partialresult', (msg: any) => {
+      if (!this.options.usePartial) return;
+      const text: string = msg?.partial || '';
+      this.maybeWake(text, false);
+    });
+    
+    this.recognizer.on('error', (err: any) => {
+      console.error('[VoskWakeWordDetector] Recognizer error:', err);
+    });
+    
+    console.log('[VoskWakeWordDetector] Recognizer created successfully');
+  }
+
+  /**
+   * Rebuild the recognizer when wake words change (to update grammar).
+   */
+  private rebuildRecognizerWithGrammar(): void {
+    if (!this.model || !this.options.useGrammar) return;
+    
+    // Clean up old recognizer
+    if (this.recognizer) {
+      try {
+        this.recognizer.remove?.();
+      } catch (e) {
+        // Ignore cleanup errors
+      }
+      this.recognizer = undefined;
+    }
+    
+    // Create new recognizer with updated grammar
+    this.createRecognizer();
   }
 
   async requestMicrophonePermission(): Promise<boolean> {
@@ -287,6 +388,15 @@ export class VoskWakeWordDetector implements WakeWordDetector {
       console.log('[VoskWakeWordDetector] Audio source node created');
     }
 
+    // Create highpass filter to remove low-frequency noise (AC hum, rumble, etc.)
+    if (!this.highpassFilter && this.options.highpassFrequency > 0) {
+      this.highpassFilter = this.audioContext.createBiquadFilter();
+      this.highpassFilter.type = 'highpass';
+      this.highpassFilter.frequency.value = this.options.highpassFrequency;
+      this.highpassFilter.Q.value = 0.7; // Butterworth response - flat passband
+      console.log(`[VoskWakeWordDetector] Highpass filter created at ${this.options.highpassFrequency}Hz`);
+    }
+
     if (!this.workletNode) {
       const ok = await this.setupAudioWorklet();
       if (!ok) {
@@ -362,10 +472,18 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         console.error('[VoskWakeWordDetector] Audio processing error:', error);
       }
     };
-    // Build a silent chain: source -> processor -> muteGain(0) -> destination
+    // Build a silent chain: source -> [highpass] -> processor -> muteGain(0) -> destination
     this.muteGain = this.audioContext.createGain();
     this.muteGain.gain.value = 0;
-    this.sourceNode.connect(processor);
+    
+    if (this.highpassFilter) {
+      // Chain with highpass filter for noise reduction
+      this.sourceNode.connect(this.highpassFilter);
+      this.highpassFilter.connect(processor);
+      console.log('[VoskWakeWordDetector] Audio chain: source -> highpass -> processor');
+    } else {
+      this.sourceNode.connect(processor);
+    }
     processor.connect(this.muteGain);
     this.muteGain.connect(this.audioContext.destination);
     
@@ -473,10 +591,18 @@ export class VoskWakeWordDetector implements WakeWordDetector {
         }
       };
 
-      // Build a silent chain: source -> worklet -> mute -> destination
+      // Build a silent chain: source -> [highpass] -> worklet -> mute -> destination
       this.muteGain = this.audioContext.createGain();
       this.muteGain.gain.value = 0;
-      this.sourceNode.connect(node);
+      
+      if (this.highpassFilter) {
+        // Chain with highpass filter for noise reduction
+        this.sourceNode.connect(this.highpassFilter);
+        this.highpassFilter.connect(node);
+        console.log('[VoskWakeWordDetector] Audio chain: source -> highpass -> worklet');
+      } else {
+        this.sourceNode.connect(node);
+      }
       node.connect(this.muteGain);
       this.muteGain.connect(this.audioContext.destination);
 
@@ -518,6 +644,11 @@ export class VoskWakeWordDetector implements WakeWordDetector {
     if (this.muteGain) {
       try { this.muteGain.disconnect(); } catch {}
       this.muteGain = undefined;
+    }
+    
+    if (this.highpassFilter) {
+      try { this.highpassFilter.disconnect(); } catch {}
+      this.highpassFilter = undefined;
     }
     
     if (this.sourceNode) {
@@ -588,11 +719,23 @@ export class VoskWakeWordDetector implements WakeWordDetector {
               if (!ok) await this.setupScriptProcessor();
             } else {
               try { (this.workletNode as AudioNode).disconnect(); } catch {}
+              if (this.highpassFilter) try { this.highpassFilter.disconnect(); } catch {}
               if (this.muteGain) try { this.muteGain.disconnect(); } catch {}
-              // Reconnect chain: source -> node -> mute -> destination
+              // Reconnect chain: source -> [highpass] -> node -> mute -> destination
               this.muteGain = this.audioContext.createGain();
               this.muteGain.gain.value = 0;
-              this.sourceNode.connect(this.workletNode as AudioNode);
+              
+              // Recreate highpass filter if needed
+              if (this.options.highpassFrequency > 0) {
+                this.highpassFilter = this.audioContext.createBiquadFilter();
+                this.highpassFilter.type = 'highpass';
+                this.highpassFilter.frequency.value = this.options.highpassFrequency;
+                this.highpassFilter.Q.value = 0.7;
+                this.sourceNode.connect(this.highpassFilter);
+                this.highpassFilter.connect(this.workletNode as AudioNode);
+              } else {
+                this.sourceNode.connect(this.workletNode as AudioNode);
+              }
               (this.workletNode as AudioNode).connect(this.muteGain);
               this.muteGain.connect(this.audioContext.destination);
             }
