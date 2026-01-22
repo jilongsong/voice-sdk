@@ -1,6 +1,6 @@
 {
   "name": "web-voice-kit",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "完全解耦的浏览器语音 SDK：独立的唤醒词检测 + 语音转写，支持智能自动停止。",
   "type": "module",
   "main": "dist/voice-sdk.cjs.js",
